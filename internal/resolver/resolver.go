@@ -2,28 +2,29 @@ package resolver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/graphpost/graphpost/internal/database"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Resolver handles GraphQL query resolution
 type Resolver struct {
-	db       *sql.DB
+	pool     *pgxpool.Pool
 	schema   *database.Schema
 	dbSchema string
 }
 
 // NewResolver creates a new resolver
-func NewResolver(db *sql.DB, schema *database.Schema, dbSchema string) *Resolver {
+func NewResolver(pool *pgxpool.Pool, schema *database.Schema, dbSchema string) *Resolver {
 	if dbSchema == "" {
 		dbSchema = "public"
 	}
 	return &Resolver{
-		db:       db,
+		pool:     pool,
 		schema:   schema,
 		dbSchema: dbSchema,
 	}
@@ -42,21 +43,21 @@ type QueryParams struct {
 
 // MutationParams represents parameters for a mutation
 type MutationParams struct {
-	TableName   string
-	Object      map[string]interface{}
-	Objects     []map[string]interface{}
-	Where       map[string]interface{}
-	SetValues   map[string]interface{}
-	IncValues   map[string]interface{}
-	OnConflict  map[string]interface{}
-	PKColumns   map[string]interface{}
+	TableName  string
+	Object     map[string]interface{}
+	Objects    []map[string]interface{}
+	Where      map[string]interface{}
+	SetValues  map[string]interface{}
+	IncValues  map[string]interface{}
+	OnConflict map[string]interface{}
+	PKColumns  map[string]interface{}
 }
 
 // ResolveQuery resolves a GraphQL query
 func (r *Resolver) ResolveQuery(ctx context.Context, params QueryParams) ([]map[string]interface{}, error) {
 	query, args := r.buildSelectQuery(params)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -88,7 +89,7 @@ func (r *Resolver) ResolveQueryByPK(ctx context.Context, tableName string, pkVal
 		quoteIdentifier(tableName),
 		strings.Join(conditions, " AND "))
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -112,7 +113,7 @@ func (r *Resolver) ResolveAggregate(ctx context.Context, params QueryParams) (ma
 	countQuery, countArgs := r.buildCountQuery(params)
 
 	var count int
-	err := r.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&count)
+	err := r.pool.QueryRow(ctx, countQuery, countArgs...).Scan(&count)
 	if err != nil {
 		return nil, fmt.Errorf("count query failed: %w", err)
 	}
@@ -196,14 +197,14 @@ func (r *Resolver) resolveAggregateFields(ctx context.Context, params QueryParam
 		query += " WHERE " + whereClause
 	}
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return result, err
 	}
 	defer rows.Close()
 
 	if rows.Next() {
-		columns, _ := rows.Columns()
+		columns := rows.FieldDescriptions()
 		values := make([]interface{}, len(columns))
 		valuePtrs := make([]interface{}, len(columns))
 		for i := range values {
@@ -223,19 +224,20 @@ func (r *Resolver) resolveAggregateFields(ctx context.Context, params QueryParam
 		varianceFields := make(map[string]interface{})
 
 		for i, col := range columns {
+			colName := string(col.Name)
 			val := values[i]
-			if strings.HasPrefix(col, "min_") {
-				minFields[strings.TrimPrefix(col, "min_")] = val
-			} else if strings.HasPrefix(col, "max_") {
-				maxFields[strings.TrimPrefix(col, "max_")] = val
-			} else if strings.HasPrefix(col, "sum_") {
-				sumFields[strings.TrimPrefix(col, "sum_")] = val
-			} else if strings.HasPrefix(col, "avg_") {
-				avgFields[strings.TrimPrefix(col, "avg_")] = val
-			} else if strings.HasPrefix(col, "stddev_") {
-				stddevFields[strings.TrimPrefix(col, "stddev_")] = val
-			} else if strings.HasPrefix(col, "variance_") {
-				varianceFields[strings.TrimPrefix(col, "variance_")] = val
+			if strings.HasPrefix(colName, "min_") {
+				minFields[strings.TrimPrefix(colName, "min_")] = val
+			} else if strings.HasPrefix(colName, "max_") {
+				maxFields[strings.TrimPrefix(colName, "max_")] = val
+			} else if strings.HasPrefix(colName, "sum_") {
+				sumFields[strings.TrimPrefix(colName, "sum_")] = val
+			} else if strings.HasPrefix(colName, "avg_") {
+				avgFields[strings.TrimPrefix(colName, "avg_")] = val
+			} else if strings.HasPrefix(colName, "stddev_") {
+				stddevFields[strings.TrimPrefix(colName, "stddev_")] = val
+			} else if strings.HasPrefix(colName, "variance_") {
+				varianceFields[strings.TrimPrefix(colName, "variance_")] = val
 			}
 		}
 
@@ -266,7 +268,7 @@ func (r *Resolver) resolveAggregateFields(ctx context.Context, params QueryParam
 func (r *Resolver) ResolveInsertOne(ctx context.Context, params MutationParams) (map[string]interface{}, error) {
 	query, args := r.buildInsertQuery(params.TableName, params.Object)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("insert failed: %w", err)
 	}
@@ -296,7 +298,7 @@ func (r *Resolver) ResolveInsert(ctx context.Context, params MutationParams) (ma
 	// Build batch insert query
 	query, args := r.buildBatchInsertQuery(params.TableName, params.Objects)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("insert failed: %w", err)
 	}
@@ -317,7 +319,7 @@ func (r *Resolver) ResolveInsert(ctx context.Context, params MutationParams) (ma
 func (r *Resolver) ResolveUpdateByPK(ctx context.Context, params MutationParams) (map[string]interface{}, error) {
 	query, args := r.buildUpdateByPKQuery(params)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("update failed: %w", err)
 	}
@@ -339,7 +341,7 @@ func (r *Resolver) ResolveUpdateByPK(ctx context.Context, params MutationParams)
 func (r *Resolver) ResolveUpdate(ctx context.Context, params MutationParams) (map[string]interface{}, error) {
 	query, args := r.buildUpdateQuery(params)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("update failed: %w", err)
 	}
@@ -373,7 +375,7 @@ func (r *Resolver) ResolveDeleteByPK(ctx context.Context, tableName string, pkVa
 		quoteIdentifier(tableName),
 		strings.Join(conditions, " AND "))
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("delete failed: %w", err)
 	}
@@ -404,7 +406,7 @@ func (r *Resolver) ResolveDelete(ctx context.Context, params MutationParams) (ma
 	}
 	query += " RETURNING *"
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("delete failed: %w", err)
 	}
@@ -468,7 +470,6 @@ func (r *Resolver) buildSelectQuery(params QueryParams) (string, []interface{}) 
 	if params.Offset != nil {
 		query += fmt.Sprintf(" OFFSET $%d", argIndex)
 		args = append(args, *params.Offset)
-		argIndex++
 	}
 
 	return query, args
@@ -682,7 +683,7 @@ func (r *Resolver) buildColumnConditions(column string, ops map[string]interface
 					strArr[i] = fmt.Sprintf("%v", v)
 				}
 				conditions = append(conditions, fmt.Sprintf("%s ?| $%d", quotedCol, argIndex))
-				args = append(args, "{"+strings.Join(strArr, ",")+"}")
+				args = append(args, strArr)
 				argIndex++
 			}
 		case "_has_keys_all":
@@ -692,7 +693,7 @@ func (r *Resolver) buildColumnConditions(column string, ops map[string]interface
 					strArr[i] = fmt.Sprintf("%v", v)
 				}
 				conditions = append(conditions, fmt.Sprintf("%s ?& $%d", quotedCol, argIndex))
-				args = append(args, "{"+strings.Join(strArr, ",")+"}")
+				args = append(args, strArr)
 				argIndex++
 			}
 		}
@@ -856,44 +857,42 @@ func (r *Resolver) buildUpdateQuery(params MutationParams) (string, []interface{
 	return query, args
 }
 
-// scanRows scans rows into a slice of maps
-func (r *Resolver) scanRows(rows *sql.Rows) ([]map[string]interface{}, error) {
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
+// scanRows scans rows into a slice of maps using pgx
+func (r *Resolver) scanRows(rows pgx.Rows) ([]map[string]interface{}, error) {
+	fieldDescriptions := rows.FieldDescriptions()
 
 	var results []map[string]interface{}
 
 	for rows.Next() {
-		values := make([]interface{}, len(columns))
-		valuePtrs := make([]interface{}, len(columns))
-		for i := range values {
-			valuePtrs[i] = &values[i]
-		}
-
-		if err := rows.Scan(valuePtrs...); err != nil {
+		values, err := rows.Values()
+		if err != nil {
 			return nil, err
 		}
 
 		row := make(map[string]interface{})
-		for i, col := range columns {
+		for i, fd := range fieldDescriptions {
+			colName := string(fd.Name)
 			val := values[i]
+
 			// Handle special types
 			switch v := val.(type) {
 			case []byte:
 				// Try to parse as JSON
 				var jsonVal interface{}
 				if err := json.Unmarshal(v, &jsonVal); err == nil {
-					row[col] = jsonVal
+					row[colName] = jsonVal
 				} else {
-					row[col] = string(v)
+					row[colName] = string(v)
 				}
 			default:
-				row[col] = v
+				row[colName] = v
 			}
 		}
 		results = append(results, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return results, nil

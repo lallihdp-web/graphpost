@@ -3,7 +3,6 @@ package events
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,11 +10,12 @@ import (
 	"time"
 
 	"github.com/graphpost/graphpost/internal/config"
+	"github.com/graphpost/graphpost/internal/database"
 )
 
 // TriggerManager manages event triggers
 type TriggerManager struct {
-	db          *sql.DB
+	db          *database.Connection
 	config      *config.EventsConfig
 	triggers    map[string]*EventTrigger
 	mu          sync.RWMutex
@@ -121,7 +121,7 @@ type TriggerPayload struct {
 }
 
 // NewTriggerManager creates a new trigger manager
-func NewTriggerManager(db *sql.DB, cfg *config.EventsConfig) *TriggerManager {
+func NewTriggerManager(db *database.Connection, cfg *config.EventsConfig) *TriggerManager {
 	return &TriggerManager{
 		db:       db,
 		config:   cfg,
@@ -210,7 +210,7 @@ func (tm *TriggerManager) createDatabaseTrigger(trigger *EventTrigger) error {
 		CREATE INDEX IF NOT EXISTS idx_graphpost_events_trigger ON graphpost_events(trigger_name);
 	`
 
-	if _, err := tm.db.ExecContext(ctx, createTableSQL); err != nil {
+	if _, err := tm.db.Exec(ctx, createTableSQL); err != nil {
 		return fmt.Errorf("failed to create events table: %w", err)
 	}
 
@@ -241,7 +241,7 @@ func (tm *TriggerManager) createDatabaseTrigger(trigger *EventTrigger) error {
 		$$ LANGUAGE plpgsql;
 	`, funcName, trigger.Name)
 
-	if _, err := tm.db.ExecContext(ctx, createFuncSQL); err != nil {
+	if _, err := tm.db.Exec(ctx, createFuncSQL); err != nil {
 		return fmt.Errorf("failed to create trigger function: %w", err)
 	}
 
@@ -256,7 +256,7 @@ func (tm *TriggerManager) createDatabaseTrigger(trigger *EventTrigger) error {
 		triggerName, joinn(operations, " OR "), trigger.Schema, trigger.Table,
 		funcName)
 
-	if _, err := tm.db.ExecContext(ctx, createTriggerSQL); err != nil {
+	if _, err := tm.db.Exec(ctx, createTriggerSQL); err != nil {
 		return fmt.Errorf("failed to create trigger: %w", err)
 	}
 
@@ -275,7 +275,7 @@ func (tm *TriggerManager) dropDatabaseTrigger(trigger *EventTrigger) error {
 		DROP FUNCTION IF EXISTS %s();
 	`, triggerName, trigger.Schema, trigger.Table, funcName)
 
-	_, err := tm.db.ExecContext(ctx, dropSQL)
+	_, err := tm.db.Exec(ctx, dropSQL)
 	return err
 }
 
@@ -307,7 +307,7 @@ func (tm *TriggerManager) fetchPendingEvents(ctx context.Context) {
 		FOR UPDATE SKIP LOCKED
 	`
 
-	rows, err := tm.db.QueryContext(ctx, query)
+	rows, err := tm.db.Query(ctx, query)
 	if err != nil {
 		return
 	}
@@ -316,7 +316,7 @@ func (tm *TriggerManager) fetchPendingEvents(ctx context.Context) {
 	for rows.Next() {
 		var event Event
 		var tableSchema, tableName string
-		var oldData, newData sql.NullString
+		var oldData, newData []byte
 
 		if err := rows.Scan(
 			&event.ID,
@@ -334,22 +334,22 @@ func (tm *TriggerManager) fetchPendingEvents(ctx context.Context) {
 
 		event.Table = TableInfo{Schema: tableSchema, Name: tableName}
 
-		if oldData.Valid {
-			json.Unmarshal([]byte(oldData.String), &event.OldData)
+		if len(oldData) > 0 {
+			json.Unmarshal(oldData, &event.OldData)
 		}
-		if newData.Valid {
-			json.Unmarshal([]byte(newData.String), &event.NewData)
+		if len(newData) > 0 {
+			json.Unmarshal(newData, &event.NewData)
 		}
 
 		// Mark as processing
-		tm.db.ExecContext(ctx, "UPDATE graphpost_events SET status = 'processing' WHERE id = $1", event.ID)
+		tm.db.Exec(ctx, "UPDATE graphpost_events SET status = 'processing' WHERE id = $1", event.ID)
 
 		// Queue for processing
 		select {
 		case tm.eventQueue <- &event:
 		default:
 			// Queue full, will retry later
-			tm.db.ExecContext(ctx, "UPDATE graphpost_events SET status = 'pending' WHERE id = $1", event.ID)
+			tm.db.Exec(ctx, "UPDATE graphpost_events SET status = 'pending' WHERE id = $1", event.ID)
 		}
 	}
 }
@@ -440,7 +440,7 @@ func (tm *TriggerManager) markEventDelivered(ctx context.Context, event *Event) 
 		SET status = 'delivered', delivered_at = NOW()
 		WHERE id = $1
 	`
-	tm.db.ExecContext(ctx, query, event.ID)
+	tm.db.Exec(ctx, query, event.ID)
 }
 
 // markEventFailed marks an event as permanently failed
@@ -450,7 +450,7 @@ func (tm *TriggerManager) markEventFailed(ctx context.Context, event *Event, err
 		SET status = 'failed', last_error = $1
 		WHERE id = $2
 	`
-	tm.db.ExecContext(ctx, query, errMsg, event.ID)
+	tm.db.Exec(ctx, query, errMsg, event.ID)
 }
 
 // handleDeliveryFailure handles a failed delivery attempt
@@ -471,7 +471,7 @@ func (tm *TriggerManager) handleDeliveryFailure(ctx context.Context, event *Even
 		SET status = 'retrying', retry_count = retry_count + 1, last_error = $1
 		WHERE id = $2
 	`
-	tm.db.ExecContext(ctx, query, errMsg, event.ID)
+	tm.db.Exec(ctx, query, errMsg, event.ID)
 }
 
 // InvokeEventTrigger manually invokes an event trigger
@@ -513,7 +513,7 @@ func (tm *TriggerManager) GetEventLogs(ctx context.Context, triggerName string, 
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := tm.db.QueryContext(ctx, query, triggerName, limit, offset)
+	rows, err := tm.db.Query(ctx, query, triggerName, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -523,8 +523,9 @@ func (tm *TriggerManager) GetEventLogs(ctx context.Context, triggerName string, 
 	for rows.Next() {
 		var event Event
 		var tableSchema, tableName string
-		var oldData, newData, lastError sql.NullString
-		var deliveredAt sql.NullTime
+		var oldData, newData []byte
+		var lastError *string
+		var deliveredAt *time.Time
 
 		if err := rows.Scan(
 			&event.ID,
@@ -544,11 +545,11 @@ func (tm *TriggerManager) GetEventLogs(ctx context.Context, triggerName string, 
 		}
 
 		event.Table = TableInfo{Schema: tableSchema, Name: tableName}
-		if oldData.Valid {
-			json.Unmarshal([]byte(oldData.String), &event.OldData)
+		if len(oldData) > 0 {
+			json.Unmarshal(oldData, &event.OldData)
 		}
-		if newData.Valid {
-			json.Unmarshal([]byte(newData.String), &event.NewData)
+		if len(newData) > 0 {
+			json.Unmarshal(newData, &event.NewData)
 		}
 
 		events = append(events, &event)
@@ -565,13 +566,12 @@ func (tm *TriggerManager) RedeliverEvent(ctx context.Context, eventID string) er
 		WHERE id = $1 AND status = 'failed'
 	`
 
-	result, err := tm.db.ExecContext(ctx, query, eventID)
+	result, err := tm.db.Exec(ctx, query, eventID)
 	if err != nil {
 		return err
 	}
 
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
+	if result.RowsAffected() == 0 {
 		return fmt.Errorf("event not found or not in failed state: %s", eventID)
 	}
 

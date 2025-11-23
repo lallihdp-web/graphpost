@@ -2,29 +2,29 @@ package database
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Introspector handles database schema introspection
 type Introspector struct {
-	db     *sql.DB
+	pool   *pgxpool.Pool
 	schema string
 }
 
 // Schema represents the complete database schema
 type Schema struct {
-	Tables       map[string]*Table
-	Views        map[string]*View
-	Functions    map[string]*Function
-	Enums        map[string]*Enum
-	Sequences    map[string]*Sequence
-	ForeignKeys  []*ForeignKey
-	Indexes      map[string][]*Index
-	Triggers     map[string][]*Trigger
+	Tables      map[string]*Table
+	Views       map[string]*View
+	Functions   map[string]*Function
+	Enums       map[string]*Enum
+	Sequences   map[string]*Sequence
+	ForeignKeys []*ForeignKey
+	Indexes     map[string][]*Index
+	Triggers    map[string][]*Trigger
 }
 
 // Table represents a database table
@@ -42,11 +42,11 @@ type Table struct {
 
 // View represents a database view
 type View struct {
-	Name       string
-	Schema     string
-	Columns    []*Column
-	Definition string
-	Comment    string
+	Name           string
+	Schema         string
+	Columns        []*Column
+	Definition     string
+	Comment        string
 	IsMaterialized bool
 }
 
@@ -78,15 +78,15 @@ type PrimaryKey struct {
 
 // ForeignKey represents a foreign key relationship
 type ForeignKey struct {
-	Name            string
-	SourceTable     string
-	SourceSchema    string
-	SourceColumns   []string
-	TargetTable     string
-	TargetSchema    string
-	TargetColumns   []string
-	OnDelete        string
-	OnUpdate        string
+	Name          string
+	SourceTable   string
+	SourceSchema  string
+	SourceColumns []string
+	TargetTable   string
+	TargetSchema  string
+	TargetColumns []string
+	OnDelete      string
+	OnUpdate      string
 }
 
 // Index represents a database index
@@ -159,12 +159,12 @@ type Trigger struct {
 }
 
 // NewIntrospector creates a new database introspector
-func NewIntrospector(db *sql.DB, schema string) *Introspector {
+func NewIntrospector(pool *pgxpool.Pool, schema string) *Introspector {
 	if schema == "" {
 		schema = "public"
 	}
 	return &Introspector{
-		db:     db,
+		pool:   pool,
 		schema: schema,
 	}
 }
@@ -246,7 +246,7 @@ func (i *Introspector) IntrospectTables(ctx context.Context) (map[string]*Table,
 		ORDER BY t.table_name
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema)
+	rows, err := i.pool.Query(ctx, query, i.schema)
 	if err != nil {
 		return nil, err
 	}
@@ -255,16 +255,18 @@ func (i *Introspector) IntrospectTables(ctx context.Context) (map[string]*Table,
 	tables := make(map[string]*Table)
 	for rows.Next() {
 		var tableName, tableSchema string
-		var comment sql.NullString
+		var comment *string
 
 		if err := rows.Scan(&tableName, &tableSchema, &comment); err != nil {
 			return nil, err
 		}
 
 		table := &Table{
-			Name:    tableName,
-			Schema:  tableSchema,
-			Comment: comment.String,
+			Name:   tableName,
+			Schema: tableSchema,
+		}
+		if comment != nil {
+			table.Comment = *comment
 		}
 
 		// Get columns for this table
@@ -304,7 +306,7 @@ func (i *Introspector) IntrospectTables(ctx context.Context) (map[string]*Table,
 		tables[tableName] = table
 	}
 
-	return tables, nil
+	return tables, rows.Err()
 }
 
 // IntrospectColumns retrieves all columns for a table
@@ -328,7 +330,7 @@ func (i *Introspector) IntrospectColumns(ctx context.Context, tableName string) 
 		ORDER BY c.ordinal_position
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema, tableName)
+	rows, err := i.pool.Query(ctx, query, i.schema, tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -337,8 +339,8 @@ func (i *Introspector) IntrospectColumns(ctx context.Context, tableName string) 
 	var columns []*Column
 	for rows.Next() {
 		var col Column
-		var defaultValue, comment sql.NullString
-		var maxLength, precision, scale sql.NullInt64
+		var defaultValue, comment *string
+		var maxLength, precision, scale *int64
 
 		if err := rows.Scan(
 			&col.Name,
@@ -356,22 +358,24 @@ func (i *Introspector) IntrospectColumns(ctx context.Context, tableName string) 
 			return nil, err
 		}
 
-		if defaultValue.Valid {
-			col.DefaultValue = &defaultValue.String
+		if defaultValue != nil {
+			col.DefaultValue = defaultValue
 		}
-		if maxLength.Valid {
-			ml := int(maxLength.Int64)
+		if maxLength != nil {
+			ml := int(*maxLength)
 			col.MaxLength = &ml
 		}
-		if precision.Valid {
-			p := int(precision.Int64)
+		if precision != nil {
+			p := int(*precision)
 			col.Precision = &p
 		}
-		if scale.Valid {
-			s := int(scale.Int64)
+		if scale != nil {
+			s := int(*scale)
 			col.Scale = &s
 		}
-		col.Comment = comment.String
+		if comment != nil {
+			col.Comment = *comment
+		}
 
 		// Check if array type
 		if strings.HasPrefix(col.SQLType, "_") {
@@ -383,7 +387,7 @@ func (i *Introspector) IntrospectColumns(ctx context.Context, tableName string) 
 		columns = append(columns, &col)
 	}
 
-	return columns, nil
+	return columns, rows.Err()
 }
 
 // IntrospectPrimaryKey retrieves the primary key for a table
@@ -402,7 +406,7 @@ func (i *Introspector) IntrospectPrimaryKey(ctx context.Context, tableName strin
 		ORDER BY kcu.ordinal_position
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema, tableName)
+	rows, err := i.pool.Query(ctx, query, i.schema, tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +428,7 @@ func (i *Introspector) IntrospectPrimaryKey(ctx context.Context, tableName strin
 		pk.Columns = append(pk.Columns, columnName)
 	}
 
-	return pk, nil
+	return pk, rows.Err()
 }
 
 // IntrospectForeignKeys retrieves all foreign keys in the schema
@@ -455,7 +459,7 @@ func (i *Introspector) IntrospectForeignKeys(ctx context.Context) ([]*ForeignKey
 		ORDER BY tc.constraint_name, kcu.ordinal_position
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema)
+	rows, err := i.pool.Query(ctx, query, i.schema)
 	if err != nil {
 		return nil, err
 	}
@@ -467,8 +471,8 @@ func (i *Introspector) IntrospectForeignKeys(ctx context.Context) ([]*ForeignKey
 	for rows.Next() {
 		var (
 			constraintName, sourceTable, sourceSchema, sourceColumn string
-			targetTable, targetSchema, targetColumn                  string
-			deleteRule, updateRule                                   string
+			targetTable, targetSchema, targetColumn                 string
+			deleteRule, updateRule                                  string
 		)
 
 		if err := rows.Scan(
@@ -504,7 +508,7 @@ func (i *Introspector) IntrospectForeignKeys(ctx context.Context) ([]*ForeignKey
 		foreignKeys = append(foreignKeys, fkMap[name])
 	}
 
-	return foreignKeys, nil
+	return foreignKeys, rows.Err()
 }
 
 // IntrospectViews retrieves all views in the schema
@@ -524,7 +528,7 @@ func (i *Introspector) IntrospectViews(ctx context.Context) (map[string]*View, e
 		ORDER BY v.table_name
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema)
+	rows, err := i.pool.Query(ctx, query, i.schema)
 	if err != nil {
 		return nil, err
 	}
@@ -533,7 +537,7 @@ func (i *Introspector) IntrospectViews(ctx context.Context) (map[string]*View, e
 	views := make(map[string]*View)
 	for rows.Next() {
 		var viewName, viewSchema string
-		var definition, comment sql.NullString
+		var definition, comment *string
 		var isMaterialized bool
 
 		if err := rows.Scan(&viewName, &viewSchema, &definition, &comment, &isMaterialized); err != nil {
@@ -543,9 +547,13 @@ func (i *Introspector) IntrospectViews(ctx context.Context) (map[string]*View, e
 		view := &View{
 			Name:           viewName,
 			Schema:         viewSchema,
-			Definition:     definition.String,
-			Comment:        comment.String,
 			IsMaterialized: isMaterialized,
+		}
+		if definition != nil {
+			view.Definition = *definition
+		}
+		if comment != nil {
+			view.Comment = *comment
 		}
 
 		// Get columns for this view
@@ -558,7 +566,7 @@ func (i *Introspector) IntrospectViews(ctx context.Context) (map[string]*View, e
 		views[viewName] = view
 	}
 
-	return views, nil
+	return views, rows.Err()
 }
 
 // IntrospectEnums retrieves all enum types in the schema
@@ -576,7 +584,7 @@ func (i *Introspector) IntrospectEnums(ctx context.Context) (map[string]*Enum, e
 		ORDER BY t.typname
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema)
+	rows, err := i.pool.Query(ctx, query, i.schema)
 	if err != nil {
 		return nil, err
 	}
@@ -587,7 +595,7 @@ func (i *Introspector) IntrospectEnums(ctx context.Context) (map[string]*Enum, e
 		var enumName, enumSchema string
 		var enumValues []string
 
-		if err := rows.Scan(&enumName, &enumSchema, (*pqStringArray)(&enumValues)); err != nil {
+		if err := rows.Scan(&enumName, &enumSchema, &enumValues); err != nil {
 			return nil, err
 		}
 
@@ -598,7 +606,7 @@ func (i *Introspector) IntrospectEnums(ctx context.Context) (map[string]*Enum, e
 		}
 	}
 
-	return enums, nil
+	return enums, rows.Err()
 }
 
 // IntrospectIndexes retrieves all indexes for a table
@@ -625,7 +633,7 @@ func (i *Introspector) IntrospectIndexes(ctx context.Context, tableName string) 
 		ORDER BY i.relname
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema, tableName)
+	rows, err := i.pool.Query(ctx, query, i.schema, tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -639,7 +647,7 @@ func (i *Introspector) IntrospectIndexes(ctx context.Context, tableName string) 
 		if err := rows.Scan(
 			&idx.Name,
 			&idx.Table,
-			(*pqStringArray)(&columns),
+			&columns,
 			&idx.IsUnique,
 			&idx.IsPrimary,
 			&idx.Type,
@@ -652,7 +660,7 @@ func (i *Introspector) IntrospectIndexes(ctx context.Context, tableName string) 
 		indexes = append(indexes, &idx)
 	}
 
-	return indexes, nil
+	return indexes, rows.Err()
 }
 
 // IntrospectFunctions retrieves all functions in the schema
@@ -673,7 +681,7 @@ func (i *Introspector) IntrospectFunctions(ctx context.Context) (map[string]*Fun
 		ORDER BY p.proname
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema)
+	rows, err := i.pool.Query(ctx, query, i.schema)
 	if err != nil {
 		return nil, err
 	}
@@ -682,7 +690,7 @@ func (i *Introspector) IntrospectFunctions(ctx context.Context) (map[string]*Fun
 	functions := make(map[string]*Function)
 	for rows.Next() {
 		var fn Function
-		var definition sql.NullString
+		var definition *string
 
 		if err := rows.Scan(
 			&fn.Name,
@@ -694,12 +702,14 @@ func (i *Introspector) IntrospectFunctions(ctx context.Context) (map[string]*Fun
 		); err != nil {
 			return nil, err
 		}
-		fn.Definition = definition.String
+		if definition != nil {
+			fn.Definition = *definition
+		}
 
 		functions[fn.Name] = &fn
 	}
 
-	return functions, nil
+	return functions, rows.Err()
 }
 
 // IntrospectSequences retrieves all sequences in the schema
@@ -719,7 +729,7 @@ func (i *Introspector) IntrospectSequences(ctx context.Context) (map[string]*Seq
 		ORDER BY s.sequence_name
 	`
 
-	rows, err := i.db.QueryContext(ctx, query, i.schema)
+	rows, err := i.pool.Query(ctx, query, i.schema)
 	if err != nil {
 		return nil, err
 	}
@@ -745,44 +755,10 @@ func (i *Introspector) IntrospectSequences(ctx context.Context) (map[string]*Seq
 		sequences[seq.Name] = &seq
 	}
 
-	return sequences, nil
+	return sequences, rows.Err()
 }
 
-// pqStringArray is a helper type for scanning PostgreSQL arrays
-type pqStringArray []string
-
-func (a *pqStringArray) Scan(src interface{}) error {
-	if src == nil {
-		*a = nil
-		return nil
-	}
-
-	switch v := src.(type) {
-	case []byte:
-		return a.scanBytes(v)
-	case string:
-		return a.scanBytes([]byte(v))
-	default:
-		return fmt.Errorf("cannot scan type %T into pqStringArray", src)
-	}
-}
-
-func (a *pqStringArray) scanBytes(src []byte) error {
-	str := string(src)
-	if str == "{}" {
-		*a = []string{}
-		return nil
-	}
-
-	// Remove curly braces
-	str = strings.Trim(str, "{}")
-
-	// Simple split by comma - doesn't handle quoted values with commas
-	parts := strings.Split(str, ",")
-	*a = make([]string, len(parts))
-	for i, p := range parts {
-		(*a)[i] = strings.Trim(p, "\"")
-	}
-
-	return nil
+// CollectRows is a helper function to collect rows into a slice
+func CollectRows[T any](rows pgx.Rows, fn func(row pgx.CollectableRow) (T, error)) ([]T, error) {
+	return pgx.CollectRows(rows, fn)
 }

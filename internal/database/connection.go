@@ -2,144 +2,320 @@ package database
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/graphpost/graphpost/internal/config"
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Connection manages the database connection pool
+// Connection manages the database connection pool using pgx
 type Connection struct {
-	db     *sql.DB
+	pool   *pgxpool.Pool
 	config *config.DatabaseConfig
-	mu     sync.RWMutex
 }
 
-// NewConnection creates a new database connection
+// NewConnection creates a new database connection pool
 func NewConnection(cfg *config.DatabaseConfig) (*Connection, error) {
-	dsn := fmt.Sprintf(
+	// Build connection string
+	connString := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, cfg.SSLMode,
 	)
 
-	db, err := sql.Open("postgres", dsn)
+	// Parse config
+	poolConfig, err := pgxpool.ParseConfig(connString)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("failed to parse connection string: %w", err)
 	}
 
-	// Configure connection pool
-	db.SetMaxOpenConns(cfg.MaxOpenConns)
-	db.SetMaxIdleConns(cfg.MaxIdleConns)
-	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	// Configure pool settings
+	poolConfig.MaxConns = int32(cfg.MaxOpenConns)
+	poolConfig.MinConns = int32(cfg.MaxIdleConns)
+	poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
+	poolConfig.MaxConnIdleTime = 30 * time.Minute
+	poolConfig.HealthCheckPeriod = 1 * time.Minute
 
-	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Configure connection settings
+	poolConfig.ConnConfig.ConnectTimeout = 10 * time.Second
+
+	// Add after connect hook for setting search_path
+	poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if cfg.Schema != "" && cfg.Schema != "public" {
+			_, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s, public", cfg.Schema))
+			return err
+		}
+		return nil
+	}
+
+	// Create connection pool
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
+	}
+
+	// Test connection
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	return &Connection{
-		db:     db,
+		pool:   pool,
 		config: cfg,
 	}, nil
 }
 
-// DB returns the underlying sql.DB
-func (c *Connection) DB() *sql.DB {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.db
+// Pool returns the underlying pgxpool.Pool
+func (c *Connection) Pool() *pgxpool.Pool {
+	return c.pool
 }
 
-// Close closes the database connection
+// Close closes the database connection pool
 func (c *Connection) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.db.Close()
+	c.pool.Close()
+	return nil
 }
 
 // Ping tests the database connection
 func (c *Connection) Ping(ctx context.Context) error {
-	return c.db.PingContext(ctx)
+	return c.pool.Ping(ctx)
 }
 
-// Stats returns database connection statistics
-func (c *Connection) Stats() sql.DBStats {
-	return c.db.Stats()
+// Stats returns database connection pool statistics
+func (c *Connection) Stats() *pgxpool.Stat {
+	return c.pool.Stat()
+}
+
+// Acquire acquires a connection from the pool
+func (c *Connection) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
+	return c.pool.Acquire(ctx)
+}
+
+// Exec executes a query that doesn't return rows
+func (c *Connection) Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	return c.pool.Exec(ctx, sql, args...)
+}
+
+// Query executes a query that returns rows
+func (c *Connection) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	return c.pool.Query(ctx, sql, args...)
+}
+
+// QueryRow executes a query that returns at most one row
+func (c *Connection) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	return c.pool.QueryRow(ctx, sql, args...)
+}
+
+// Begin starts a transaction
+func (c *Connection) Begin(ctx context.Context) (pgx.Tx, error) {
+	return c.pool.Begin(ctx)
+}
+
+// BeginTx starts a transaction with the given options
+func (c *Connection) BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error) {
+	return c.pool.BeginTx(ctx, txOptions)
 }
 
 // Transaction executes a function within a database transaction
-func (c *Connection) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := c.db.BeginTx(ctx, nil)
+func (c *Connection) Transaction(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 
+	defer func() {
+		if p := recover(); p != nil {
+			tx.Rollback(ctx)
+			panic(p)
+		}
+	}()
+
 	if err := fn(tx); err != nil {
-		if rbErr := tx.Rollback(); rbErr != nil {
+		if rbErr := tx.Rollback(ctx); rbErr != nil {
 			return fmt.Errorf("tx err: %v, rb err: %v", err, rbErr)
 		}
 		return err
 	}
 
-	return tx.Commit()
+	return tx.Commit(ctx)
 }
 
-// QueryRow executes a query that returns at most one row
-func (c *Connection) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	return c.db.QueryRowContext(ctx, query, args...)
+// SendBatch sends a batch of queries
+func (c *Connection) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
+	return c.pool.SendBatch(ctx, batch)
 }
 
-// Query executes a query that returns rows
-func (c *Connection) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return c.db.QueryContext(ctx, query, args...)
+// CopyFrom efficiently copies data using PostgreSQL's COPY protocol
+func (c *Connection) CopyFrom(ctx context.Context, tableName pgx.Identifier, columnNames []string, rowSrc pgx.CopyFromSource) (int64, error) {
+	return c.pool.CopyFrom(ctx, tableName, columnNames, rowSrc)
 }
 
-// Exec executes a query that doesn't return rows
-func (c *Connection) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return c.db.ExecContext(ctx, query, args...)
+// Notify sends a notification on a channel
+func (c *Connection) Notify(ctx context.Context, channel, payload string) error {
+	_, err := c.pool.Exec(ctx, "SELECT pg_notify($1, $2)", channel, payload)
+	return err
 }
 
-// Prepare creates a prepared statement
-func (c *Connection) Prepare(ctx context.Context, query string) (*sql.Stmt, error) {
-	return c.db.PrepareContext(ctx, query)
-}
+// HealthCheck returns detailed health check information
+func (c *Connection) HealthCheck(ctx context.Context) map[string]interface{} {
+	stats := c.pool.Stat()
 
-// ListenNotify sets up PostgreSQL LISTEN/NOTIFY
-type ListenNotify struct {
-	conn     *Connection
-	channel  string
-	callback func(payload string)
-}
-
-// NewListenNotify creates a new LISTEN/NOTIFY handler
-func NewListenNotify(conn *Connection, channel string, callback func(payload string)) *ListenNotify {
-	return &ListenNotify{
-		conn:     conn,
-		channel:  channel,
-		callback: callback,
+	health := map[string]interface{}{
+		"status": "healthy",
+		"pool": map[string]interface{}{
+			"total_connections":          stats.TotalConns(),
+			"acquired_connections":       stats.AcquiredConns(),
+			"idle_connections":           stats.IdleConns(),
+			"max_connections":            stats.MaxConns(),
+			"constructing_connections":   stats.ConstructingConns(),
+			"new_connections_count":      stats.NewConnsCount(),
+			"max_lifetime_destroy_count": stats.MaxLifetimeDestroyCount(),
+			"max_idle_destroy_count":     stats.MaxIdleDestroyCount(),
+		},
 	}
+
+	// Test actual connection
+	if err := c.pool.Ping(ctx); err != nil {
+		health["status"] = "unhealthy"
+		health["error"] = err.Error()
+	}
+
+	return health
+}
+
+// GetDSN returns the connection DSN
+func (c *Connection) GetDSN() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		c.config.User, c.config.Password, c.config.Host, c.config.Port, c.config.Database, c.config.SSLMode)
+}
+
+// Config returns the database configuration
+func (c *Connection) Config() *config.DatabaseConfig {
+	return c.config
+}
+
+// Listener handles PostgreSQL LISTEN/NOTIFY using pgx
+type Listener struct {
+	conn        *pgx.Conn
+	connConfig  *pgx.ConnConfig
+	channel     string
+	callback    func(notification *pgconn.Notification)
+	stopChan    chan struct{}
+}
+
+// NewListener creates a new LISTEN/NOTIFY listener
+func NewListener(cfg *config.DatabaseConfig, channel string, callback func(notification *pgconn.Notification)) (*Listener, error) {
+	connString := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, cfg.SSLMode,
+	)
+
+	connConfig, err := pgx.ParseConfig(connString)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Listener{
+		connConfig: connConfig,
+		channel:    channel,
+		callback:   callback,
+		stopChan:   make(chan struct{}),
+	}, nil
+}
+
+// Start begins listening for notifications
+func (l *Listener) Start(ctx context.Context) error {
+	conn, err := pgx.ConnectConfig(ctx, l.connConfig)
+	if err != nil {
+		return fmt.Errorf("failed to connect for listen: %w", err)
+	}
+	l.conn = conn
+
+	// Start listening
+	_, err = conn.Exec(ctx, fmt.Sprintf("LISTEN %s", l.channel))
+	if err != nil {
+		conn.Close(ctx)
+		return fmt.Errorf("failed to listen on channel %s: %w", l.channel, err)
+	}
+
+	// Start notification handler goroutine
+	go l.handleNotifications(ctx)
+
+	return nil
+}
+
+// handleNotifications handles incoming notifications
+func (l *Listener) handleNotifications(ctx context.Context) {
+	for {
+		select {
+		case <-l.stopChan:
+			return
+		case <-ctx.Done():
+			return
+		default:
+			// Wait for notification with timeout
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			notification, err := l.conn.WaitForNotification(waitCtx)
+			cancel()
+
+			if err != nil {
+				// Check if context was cancelled or timeout
+				if ctx.Err() != nil {
+					return
+				}
+				// Timeout is expected, continue
+				continue
+			}
+
+			if l.callback != nil && notification != nil {
+				l.callback(notification)
+			}
+		}
+	}
+}
+
+// Stop stops listening for notifications
+func (l *Listener) Stop(ctx context.Context) error {
+	close(l.stopChan)
+	if l.conn != nil {
+		return l.conn.Close(ctx)
+	}
+	return nil
+}
+
+// ListenNotify is a legacy wrapper for compatibility
+type ListenNotify struct {
+	listener *Listener
+}
+
+// NewListenNotify creates a new LISTEN/NOTIFY handler (legacy interface)
+func NewListenNotify(conn *Connection, channel string, callback func(payload string)) *ListenNotify {
+	listener, _ := NewListener(conn.config, channel, func(n *pgconn.Notification) {
+		if callback != nil {
+			callback(n.Payload)
+		}
+	})
+	return &ListenNotify{listener: listener}
 }
 
 // Start begins listening for notifications
 func (ln *ListenNotify) Start(ctx context.Context) error {
-	_, err := ln.conn.Exec(ctx, fmt.Sprintf("LISTEN %s", ln.channel))
-	if err != nil {
-		return err
+	if ln.listener != nil {
+		return ln.listener.Start(ctx)
 	}
-
-	// Note: For production, use github.com/lib/pq's Listener for proper LISTEN/NOTIFY
 	return nil
 }
 
 // Stop stops listening for notifications
 func (ln *ListenNotify) Stop(ctx context.Context) error {
-	_, err := ln.conn.Exec(ctx, fmt.Sprintf("UNLISTEN %s", ln.channel))
-	return err
+	if ln.listener != nil {
+		return ln.listener.Stop(ctx)
+	}
+	return nil
 }

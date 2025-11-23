@@ -50,7 +50,7 @@ func (e *Engine) Initialize(ctx context.Context) error {
 	e.dbConn = dbConn
 
 	// Introspect database schema
-	introspector := database.NewIntrospector(dbConn.DB(), e.config.Database.Schema)
+	introspector := database.NewIntrospector(dbConn.Pool(), e.config.Database.Schema)
 	dbSchema, err := introspector.IntrospectSchema(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to introspect database schema: %w", err)
@@ -58,7 +58,7 @@ func (e *Engine) Initialize(ctx context.Context) error {
 	e.dbSchema = dbSchema
 
 	// Create resolver
-	e.resolver = resolver.NewResolver(dbConn.DB(), dbSchema, e.config.Database.Schema)
+	e.resolver = resolver.NewResolver(dbConn.Pool(), dbSchema, e.config.Database.Schema)
 
 	// Generate GraphQL schema
 	generator := schema.NewGenerator(dbSchema)
@@ -75,7 +75,7 @@ func (e *Engine) Initialize(ctx context.Context) error {
 	e.subManager = subscription.NewManager(dbConn, e.resolver, dbSchema)
 
 	// Initialize event trigger manager
-	e.triggerManager = events.NewTriggerManager(dbConn.DB(), &e.config.Events)
+	e.triggerManager = events.NewTriggerManager(dbConn, &e.config.Events)
 
 	e.ready = true
 	return nil
@@ -97,12 +97,12 @@ func (e *Engine) Start(ctx context.Context) error {
 }
 
 // Stop stops the engine
-func (e *Engine) Stop() error {
+func (e *Engine) Stop(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.subManager != nil {
-		e.subManager.Stop()
+		e.subManager.Stop(ctx)
 	}
 
 	if e.triggerManager != nil {
@@ -147,7 +147,7 @@ func (e *Engine) Reload(ctx context.Context) error {
 	defer e.mu.Unlock()
 
 	// Re-introspect database schema
-	introspector := database.NewIntrospector(e.dbConn.DB(), e.config.Database.Schema)
+	introspector := database.NewIntrospector(e.dbConn.Pool(), e.config.Database.Schema)
 	dbSchema, err := introspector.IntrospectSchema(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to introspect database schema: %w", err)
@@ -155,7 +155,7 @@ func (e *Engine) Reload(ctx context.Context) error {
 	e.dbSchema = dbSchema
 
 	// Recreate resolver
-	e.resolver = resolver.NewResolver(e.dbConn.DB(), dbSchema, e.config.Database.Schema)
+	e.resolver = resolver.NewResolver(e.dbConn.Pool(), dbSchema, e.config.Database.Schema)
 
 	// Regenerate GraphQL schema
 	generator := schema.NewGenerator(dbSchema)

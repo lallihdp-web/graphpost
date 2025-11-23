@@ -9,7 +9,7 @@ import (
 
 	"github.com/graphpost/graphpost/internal/database"
 	"github.com/graphpost/graphpost/internal/resolver"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Manager handles GraphQL subscriptions using PostgreSQL LISTEN/NOTIFY
@@ -17,7 +17,7 @@ type Manager struct {
 	db           *database.Connection
 	resolver     *resolver.Resolver
 	schema       *database.Schema
-	listeners    map[string]*pq.Listener
+	listeners    map[string]*database.Listener
 	subscribers  map[string]map[string]*Subscriber
 	mu           sync.RWMutex
 	pollInterval time.Duration
@@ -67,7 +67,7 @@ func NewManager(db *database.Connection, res *resolver.Resolver, schema *databas
 		db:           db,
 		resolver:     res,
 		schema:       schema,
-		listeners:    make(map[string]*pq.Listener),
+		listeners:    make(map[string]*database.Listener),
 		subscribers:  make(map[string]map[string]*Subscriber),
 		pollInterval: 10 * time.Second,
 	}
@@ -86,13 +86,13 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // Stop stops the subscription manager
-func (m *Manager) Stop() {
+func (m *Manager) Stop(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Close all listeners
 	for _, listener := range m.listeners {
-		listener.Close()
+		listener.Stop(ctx)
 	}
 
 	// Close all subscriber channels
@@ -129,58 +129,32 @@ func (m *Manager) Unsubscribe(tableName, subscriberID string) {
 	}
 }
 
-// setupTableListener sets up a PostgreSQL listener for a table
+// setupTableListener sets up a PostgreSQL listener for a table using pgx
 func (m *Manager) setupTableListener(ctx context.Context, tableName string) error {
 	channelName := fmt.Sprintf("graphpost_%s", tableName)
 
-	// Create listener
-	listener := pq.NewListener(
-		m.getDSN(),
-		10*time.Second,
-		time.Minute,
-		func(ev pq.ListenerEventType, err error) {
-			if err != nil {
-				fmt.Printf("Listener error for %s: %v\n", tableName, err)
-			}
-		},
-	)
+	// Create callback that will handle notifications
+	callback := func(notification *pgconn.Notification) {
+		var payload NotificationPayload
+		if err := json.Unmarshal([]byte(notification.Payload), &payload); err != nil {
+			return
+		}
+		m.broadcastEvent(tableName, &payload)
+	}
 
-	if err := listener.Listen(channelName); err != nil {
-		return err
+	// Create listener using pgx
+	listener, err := database.NewListener(m.db.Config(), channelName, callback)
+	if err != nil {
+		return fmt.Errorf("failed to create listener: %w", err)
+	}
+
+	// Start the listener
+	if err := listener.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start listener: %w", err)
 	}
 
 	m.listeners[tableName] = listener
-
-	// Start goroutine to handle notifications
-	go m.handleNotifications(ctx, tableName, listener)
-
 	return nil
-}
-
-// handleNotifications handles incoming notifications for a table
-func (m *Manager) handleNotifications(ctx context.Context, tableName string, listener *pq.Listener) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-
-		case notification := <-listener.Notify:
-			if notification == nil {
-				continue
-			}
-
-			var payload NotificationPayload
-			if err := json.Unmarshal([]byte(notification.Extra), &payload); err != nil {
-				continue
-			}
-
-			m.broadcastEvent(tableName, &payload)
-
-		case <-time.After(m.pollInterval):
-			// Poll for changes (fallback mechanism)
-			go listener.Ping()
-		}
-	}
 }
 
 // broadcastEvent broadcasts an event to all subscribers of a table
@@ -210,12 +184,6 @@ func (m *Manager) broadcastEvent(tableName string, payload *NotificationPayload)
 			// Channel is full, skip
 		}
 	}
-}
-
-// getDSN returns the database DSN
-func (m *Manager) getDSN() string {
-	// This should be configured properly
-	return ""
 }
 
 // SetupTriggers creates database triggers for real-time subscriptions
