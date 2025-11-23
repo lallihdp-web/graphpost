@@ -6,6 +6,7 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/graphql-go/graphql v0.8.1
 	github.com/jackc/pgx/v5 v5.5.1
+	github.com/redis/go-redis/v9 v9.3.0
 	go.opentelemetry.io/otel v1.21.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.21.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.21.0
@@ -17,6 +18,8 @@ require (
 
 require (
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
+	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-logr/logr v1.3.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect

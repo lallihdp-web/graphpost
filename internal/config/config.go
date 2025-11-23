@@ -17,6 +17,7 @@ type Config struct {
 	GraphQL   GraphQLConfig   `json:"graphql"`
 	Telemetry TelemetryConfig `json:"telemetry"`
 	Logging   LoggingConfig   `json:"logging"`
+	Cache     CacheConfig     `json:"cache"`
 }
 
 // ServerConfig holds server-related configuration
@@ -216,6 +217,42 @@ type LoggingConfig struct {
 	IncludeStackTrace bool `json:"include_stack_trace"`
 }
 
+// CacheConfig holds caching configuration
+type CacheConfig struct {
+	// Enabled enables caching
+	Enabled bool `json:"enabled"`
+
+	// Backend is the cache backend: "memory", "redis"
+	Backend string `json:"backend"`
+
+	// DefaultTTL is the default time-to-live for cached items
+	DefaultTTL time.Duration `json:"default_ttl"`
+
+	// MaxSize is the maximum number of items in the cache (memory backend)
+	MaxSize int `json:"max_size"`
+
+	// QueryCacheEnabled enables GraphQL query result caching
+	QueryCacheEnabled bool `json:"query_cache_enabled"`
+
+	// QueryCacheTTL is the TTL for query results
+	QueryCacheTTL time.Duration `json:"query_cache_ttl"`
+
+	// SchemaCacheEnabled enables database schema caching
+	SchemaCacheEnabled bool `json:"schema_cache_enabled"`
+
+	// SchemaCacheTTL is the TTL for schema cache
+	SchemaCacheTTL time.Duration `json:"schema_cache_ttl"`
+
+	// ExcludedTables lists tables that should never be cached
+	ExcludedTables []string `json:"excluded_tables"`
+
+	// Redis configuration (when backend is "redis")
+	RedisHost     string `json:"redis_host"`
+	RedisPort     int    `json:"redis_port"`
+	RedisPassword string `json:"redis_password"`
+	RedisDB       int    `json:"redis_db"`
+}
+
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
@@ -310,6 +347,21 @@ func DefaultConfig() *Config {
 			LogQueryParams:     false,
 			RequestLog:         true,
 			IncludeStackTrace:  false,
+		},
+		Cache: CacheConfig{
+			Enabled:            false,
+			Backend:            "memory",
+			DefaultTTL:         5 * time.Minute,
+			MaxSize:            10000,
+			QueryCacheEnabled:  true,
+			QueryCacheTTL:      1 * time.Minute,
+			SchemaCacheEnabled: true,
+			SchemaCacheTTL:     5 * time.Minute,
+			ExcludedTables:     []string{},
+			RedisHost:          "localhost",
+			RedisPort:          6379,
+			RedisPassword:      "",
+			RedisDB:            0,
 		},
 	}
 }
@@ -483,6 +535,59 @@ func LoadFromEnv() *Config {
 	}
 	if includeStackTrace := os.Getenv("GRAPHPOST_LOG_STACK_TRACE"); includeStackTrace == "true" {
 		config.Logging.IncludeStackTrace = true
+	}
+
+	// Cache configuration
+	if cacheEnabled := os.Getenv("GRAPHPOST_CACHE_ENABLED"); cacheEnabled == "true" {
+		config.Cache.Enabled = true
+	}
+	if cacheBackend := os.Getenv("GRAPHPOST_CACHE_BACKEND"); cacheBackend != "" {
+		config.Cache.Backend = cacheBackend
+	}
+	if cacheTTL := os.Getenv("GRAPHPOST_CACHE_TTL"); cacheTTL != "" {
+		if d, err := time.ParseDuration(cacheTTL); err == nil {
+			config.Cache.DefaultTTL = d
+		}
+	}
+	if cacheMaxSize := os.Getenv("GRAPHPOST_CACHE_MAX_SIZE"); cacheMaxSize != "" {
+		var v int
+		if err := json.Unmarshal([]byte(cacheMaxSize), &v); err == nil {
+			config.Cache.MaxSize = v
+		}
+	}
+	if queryCacheEnabled := os.Getenv("GRAPHPOST_CACHE_QUERY_ENABLED"); queryCacheEnabled == "false" {
+		config.Cache.QueryCacheEnabled = false
+	}
+	if queryCacheTTL := os.Getenv("GRAPHPOST_CACHE_QUERY_TTL"); queryCacheTTL != "" {
+		if d, err := time.ParseDuration(queryCacheTTL); err == nil {
+			config.Cache.QueryCacheTTL = d
+		}
+	}
+	if schemaCacheEnabled := os.Getenv("GRAPHPOST_CACHE_SCHEMA_ENABLED"); schemaCacheEnabled == "false" {
+		config.Cache.SchemaCacheEnabled = false
+	}
+	if schemaCacheTTL := os.Getenv("GRAPHPOST_CACHE_SCHEMA_TTL"); schemaCacheTTL != "" {
+		if d, err := time.ParseDuration(schemaCacheTTL); err == nil {
+			config.Cache.SchemaCacheTTL = d
+		}
+	}
+	if redisHost := os.Getenv("GRAPHPOST_REDIS_HOST"); redisHost != "" {
+		config.Cache.RedisHost = redisHost
+	}
+	if redisPort := os.Getenv("GRAPHPOST_REDIS_PORT"); redisPort != "" {
+		var v int
+		if err := json.Unmarshal([]byte(redisPort), &v); err == nil {
+			config.Cache.RedisPort = v
+		}
+	}
+	if redisPassword := os.Getenv("GRAPHPOST_REDIS_PASSWORD"); redisPassword != "" {
+		config.Cache.RedisPassword = redisPassword
+	}
+	if redisDB := os.Getenv("GRAPHPOST_REDIS_DB"); redisDB != "" {
+		var v int
+		if err := json.Unmarshal([]byte(redisDB), &v); err == nil {
+			config.Cache.RedisDB = v
+		}
 	}
 
 	return config

@@ -440,6 +440,98 @@ GRAPHPOST_TELEMETRY_SAMPLE_RATE=0.1
 GRAPHPOST_TELEMETRY_SAMPLE_RATE=1.0
 ```
 
+---
+
+## Cache Configuration
+
+```go
+type CacheConfig struct {
+    Enabled            bool          `json:"enabled"`
+    Backend            string        `json:"backend"`
+    DefaultTTL         time.Duration `json:"default_ttl"`
+    MaxSize            int           `json:"max_size"`
+    QueryCacheEnabled  bool          `json:"query_cache_enabled"`
+    QueryCacheTTL      time.Duration `json:"query_cache_ttl"`
+    SchemaCacheEnabled bool          `json:"schema_cache_enabled"`
+    SchemaCacheTTL     time.Duration `json:"schema_cache_ttl"`
+    ExcludedTables     []string      `json:"excluded_tables"`
+    RedisHost          string        `json:"redis_host"`
+    RedisPort          int           `json:"redis_port"`
+    RedisPassword      string        `json:"redis_password"`
+    RedisDB            int           `json:"redis_db"`
+}
+```
+
+| Parameter | Environment Variable | Default | Description |
+|-----------|---------------------|---------|-------------|
+| `enabled` | `GRAPHPOST_CACHE_ENABLED` | `false` | Enable caching |
+| `backend` | `GRAPHPOST_CACHE_BACKEND` | `memory` | Cache backend: memory, redis |
+| `default_ttl` | `GRAPHPOST_CACHE_TTL` | `5m` | Default TTL for cached items |
+| `max_size` | `GRAPHPOST_CACHE_MAX_SIZE` | `10000` | Max items in memory cache |
+| `query_cache_enabled` | `GRAPHPOST_CACHE_QUERY_ENABLED` | `true` | Enable query result caching |
+| `query_cache_ttl` | `GRAPHPOST_CACHE_QUERY_TTL` | `1m` | TTL for query results |
+| `schema_cache_enabled` | `GRAPHPOST_CACHE_SCHEMA_ENABLED` | `true` | Enable schema caching |
+| `schema_cache_ttl` | `GRAPHPOST_CACHE_SCHEMA_TTL` | `5m` | TTL for schema cache |
+| `redis_host` | `GRAPHPOST_REDIS_HOST` | `localhost` | Redis host |
+| `redis_port` | `GRAPHPOST_REDIS_PORT` | `6379` | Redis port |
+| `redis_password` | `GRAPHPOST_REDIS_PASSWORD` | `` | Redis password |
+| `redis_db` | `GRAPHPOST_REDIS_DB` | `0` | Redis database number |
+
+### In-Memory Cache (Default)
+
+```bash
+# Enable caching with in-memory backend
+GRAPHPOST_CACHE_ENABLED=true
+GRAPHPOST_CACHE_BACKEND=memory
+GRAPHPOST_CACHE_MAX_SIZE=10000
+GRAPHPOST_CACHE_TTL=5m
+```
+
+### Redis Cache (Distributed)
+
+```bash
+# Enable caching with Redis backend
+GRAPHPOST_CACHE_ENABLED=true
+GRAPHPOST_CACHE_BACKEND=redis
+GRAPHPOST_REDIS_HOST=redis.example.com
+GRAPHPOST_REDIS_PORT=6379
+GRAPHPOST_REDIS_PASSWORD=secret
+```
+
+### Query Result Caching
+
+```bash
+# Cache GraphQL query results for 2 minutes
+GRAPHPOST_CACHE_ENABLED=true
+GRAPHPOST_CACHE_QUERY_ENABLED=true
+GRAPHPOST_CACHE_QUERY_TTL=2m
+```
+
+### Cache Statistics
+
+Cache statistics are available via the `/health` endpoint:
+```json
+{
+  "cache": {
+    "enabled": true,
+    "query_hits": 1250,
+    "query_misses": 150,
+    "query_hit_rate": 0.89,
+    "cache_stats": {
+      "hits": 1400,
+      "misses": 200,
+      "hit_rate": 0.875,
+      "size": 5000,
+      "max_size": 10000,
+      "evictions": 50,
+      "bytes_used": 2500000
+    }
+  }
+}
+```
+
+---
+
 ## Configuration File Examples
 
 ### JSON Configuration
