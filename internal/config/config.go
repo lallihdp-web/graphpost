@@ -14,6 +14,7 @@ type Config struct {
 	Console  ConsoleConfig  `json:"console"`
 	Events   EventsConfig   `json:"events"`
 	CORS     CORSConfig     `json:"cors"`
+	GraphQL  GraphQLConfig  `json:"graphql"`
 }
 
 // ServerConfig holds server-related configuration
@@ -24,6 +25,29 @@ type ServerConfig struct {
 	EnableIntrospection bool        `json:"enable_introspection"`
 	RequestTimeout    time.Duration `json:"request_timeout"`
 	MaxConnections    int           `json:"max_connections"`
+}
+
+// GraphQLConfig holds GraphQL operation configuration
+type GraphQLConfig struct {
+	// EnableQueries allows SELECT operations (default: true)
+	EnableQueries bool `json:"enable_queries"`
+
+	// EnableMutations allows INSERT/UPDATE/DELETE operations (default: true)
+	EnableMutations bool `json:"enable_mutations"`
+
+	// EnableSubscriptions allows real-time subscriptions (default: true)
+	EnableSubscriptions bool `json:"enable_subscriptions"`
+
+	// EnableAggregations allows aggregate queries (default: true)
+	EnableAggregations bool `json:"enable_aggregations"`
+
+	// QueryDepthLimit limits nested query depth (0 = unlimited)
+	QueryDepthLimit int `json:"query_depth_limit"`
+
+	// QueryTimeout is the default timeout for queries
+	// Applied via context.WithTimeout at query execution
+	// 0 = no timeout (default)
+	QueryTimeout time.Duration `json:"query_timeout"`
 }
 
 // DatabaseConfig holds database connection configuration
@@ -73,10 +97,6 @@ type PoolConfig struct {
 	// ConnectTimeout is the timeout for establishing new connections
 	// Default: 10 seconds
 	ConnectTimeout time.Duration `json:"connect_timeout"`
-
-	// QueryTimeout is the default timeout for queries (0 = no timeout)
-	// Default: 0 (no timeout)
-	QueryTimeout time.Duration `json:"query_timeout"`
 
 	// LazyConnect delays connection creation until first use
 	// Default: false
@@ -153,7 +173,6 @@ func DefaultConfig() *Config {
 				MaxConnIdleTime:      30 * time.Minute,
 				HealthCheckPeriod:    1 * time.Minute,
 				ConnectTimeout:       10 * time.Second,
-				QueryTimeout:         0, // No timeout
 				LazyConnect:          false,
 				PreferSimpleProtocol: false,
 			},
@@ -191,6 +210,14 @@ func DefaultConfig() *Config {
 			AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Admin-Secret"},
 			AllowCredentials: true,
 			MaxAge:           86400,
+		},
+		GraphQL: GraphQLConfig{
+			EnableQueries:       true,
+			EnableMutations:     true,
+			EnableSubscriptions: true,
+			EnableAggregations:  true,
+			QueryDepthLimit:     0, // Unlimited
+			QueryTimeout:        0, // No timeout
 		},
 	}
 }
@@ -268,16 +295,36 @@ func LoadFromEnv() *Config {
 			config.Database.Pool.ConnectTimeout = d
 		}
 	}
-	if queryTimeout := os.Getenv("GRAPHPOST_POOL_QUERY_TIMEOUT"); queryTimeout != "" {
-		if d, err := time.ParseDuration(queryTimeout); err == nil {
-			config.Database.Pool.QueryTimeout = d
-		}
-	}
 	if lazyConnect := os.Getenv("GRAPHPOST_POOL_LAZY_CONNECT"); lazyConnect == "true" {
 		config.Database.Pool.LazyConnect = true
 	}
 	if simpleProtocol := os.Getenv("GRAPHPOST_POOL_SIMPLE_PROTOCOL"); simpleProtocol == "true" {
 		config.Database.Pool.PreferSimpleProtocol = true
+	}
+
+	// GraphQL operation configuration
+	if enableQueries := os.Getenv("GRAPHPOST_ENABLE_QUERIES"); enableQueries == "false" {
+		config.GraphQL.EnableQueries = false
+	}
+	if enableMutations := os.Getenv("GRAPHPOST_ENABLE_MUTATIONS"); enableMutations == "false" {
+		config.GraphQL.EnableMutations = false
+	}
+	if enableSubscriptions := os.Getenv("GRAPHPOST_ENABLE_SUBSCRIPTIONS"); enableSubscriptions == "false" {
+		config.GraphQL.EnableSubscriptions = false
+	}
+	if enableAggregations := os.Getenv("GRAPHPOST_ENABLE_AGGREGATIONS"); enableAggregations == "false" {
+		config.GraphQL.EnableAggregations = false
+	}
+	if depthLimit := os.Getenv("GRAPHPOST_QUERY_DEPTH_LIMIT"); depthLimit != "" {
+		var v int
+		if err := json.Unmarshal([]byte(depthLimit), &v); err == nil {
+			config.GraphQL.QueryDepthLimit = v
+		}
+	}
+	if queryTimeout := os.Getenv("GRAPHPOST_QUERY_TIMEOUT"); queryTimeout != "" {
+		if d, err := time.ParseDuration(queryTimeout); err == nil {
+			config.GraphQL.QueryTimeout = d
+		}
 	}
 
 	return config
@@ -301,7 +348,6 @@ func parseDatabaseURL(url string) DatabaseConfig {
 			MaxConnIdleTime:      30 * time.Minute,
 			HealthCheckPeriod:    1 * time.Minute,
 			ConnectTimeout:       10 * time.Second,
-			QueryTimeout:         0,
 			LazyConnect:          false,
 			PreferSimpleProtocol: false,
 		},

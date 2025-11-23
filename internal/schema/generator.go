@@ -4,17 +4,19 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/graphpost/graphpost/internal/config"
 	"github.com/graphpost/graphpost/internal/database"
 	"github.com/graphql-go/graphql"
 )
 
 // Generator generates GraphQL schema from database schema
 type Generator struct {
-	dbSchema     *database.Schema
-	types        map[string]*graphql.Object
-	inputTypes   map[string]*graphql.InputObject
-	enumTypes    map[string]*graphql.Enum
-	orderByEnums map[string]*graphql.Enum
+	dbSchema      *database.Schema
+	graphqlConfig *config.GraphQLConfig
+	types         map[string]*graphql.Object
+	inputTypes    map[string]*graphql.InputObject
+	enumTypes     map[string]*graphql.Enum
+	orderByEnums  map[string]*graphql.Enum
 	relationships map[string][]*Relationship
 }
 
@@ -39,9 +41,19 @@ const (
 )
 
 // NewGenerator creates a new schema generator
-func NewGenerator(dbSchema *database.Schema) *Generator {
+func NewGenerator(dbSchema *database.Schema, gqlConfig *config.GraphQLConfig) *Generator {
+	// Use defaults if config not provided
+	if gqlConfig == nil {
+		gqlConfig = &config.GraphQLConfig{
+			EnableQueries:       true,
+			EnableMutations:     true,
+			EnableSubscriptions: true,
+			EnableAggregations:  true,
+		}
+	}
 	return &Generator{
 		dbSchema:      dbSchema,
+		graphqlConfig: gqlConfig,
 		types:         make(map[string]*graphql.Object),
 		inputTypes:    make(map[string]*graphql.InputObject),
 		enumTypes:     make(map[string]*graphql.Enum),
@@ -66,42 +78,61 @@ func (g *Generator) Generate() (*graphql.Schema, error) {
 		return nil, err
 	}
 
-	// Step 5: Generate input types for mutations
-	g.generateInputTypes()
+	// Step 5: Generate input types for mutations (only if mutations enabled)
+	if g.graphqlConfig.EnableMutations {
+		g.generateInputTypes()
+	}
 
-	// Step 6: Generate query fields
-	queryFields := g.generateQueryFields()
+	// Build schema config
+	schemaConfig := graphql.SchemaConfig{}
 
-	// Step 7: Generate mutation fields
-	mutationFields := g.generateMutationFields()
+	// Step 6: Generate query fields (if enabled)
+	if g.graphqlConfig.EnableQueries {
+		queryFields := g.generateQueryFields()
+		schemaConfig.Query = graphql.NewObject(graphql.ObjectConfig{
+			Name:   "Query",
+			Fields: queryFields,
+		})
+	} else {
+		// GraphQL requires at least a Query type, create empty one
+		schemaConfig.Query = graphql.NewObject(graphql.ObjectConfig{
+			Name: "Query",
+			Fields: graphql.Fields{
+				"_empty": &graphql.Field{
+					Type:        graphql.String,
+					Description: "Queries are disabled",
+					Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+						return "Queries are disabled", nil
+					},
+				},
+			},
+		})
+	}
 
-	// Step 8: Generate subscription fields
-	subscriptionFields := g.generateSubscriptionFields()
+	// Step 7: Generate mutation fields (if enabled)
+	if g.graphqlConfig.EnableMutations {
+		mutationFields := g.generateMutationFields()
+		if len(mutationFields) > 0 {
+			schemaConfig.Mutation = graphql.NewObject(graphql.ObjectConfig{
+				Name:   "Mutation",
+				Fields: mutationFields,
+			})
+		}
+	}
 
-	// Create root query type
-	queryType := graphql.NewObject(graphql.ObjectConfig{
-		Name:   "Query",
-		Fields: queryFields,
-	})
-
-	// Create root mutation type
-	mutationType := graphql.NewObject(graphql.ObjectConfig{
-		Name:   "Mutation",
-		Fields: mutationFields,
-	})
-
-	// Create root subscription type
-	subscriptionType := graphql.NewObject(graphql.ObjectConfig{
-		Name:   "Subscription",
-		Fields: subscriptionFields,
-	})
+	// Step 8: Generate subscription fields (if enabled)
+	if g.graphqlConfig.EnableSubscriptions {
+		subscriptionFields := g.generateSubscriptionFields()
+		if len(subscriptionFields) > 0 {
+			schemaConfig.Subscription = graphql.NewObject(graphql.ObjectConfig{
+				Name:   "Subscription",
+				Fields: subscriptionFields,
+			})
+		}
+	}
 
 	// Create schema
-	schema, err := graphql.NewSchema(graphql.SchemaConfig{
-		Query:        queryType,
-		Mutation:     mutationType,
-		Subscription: subscriptionType,
-	})
+	schema, err := graphql.NewSchema(schemaConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create schema: %w", err)
 	}
