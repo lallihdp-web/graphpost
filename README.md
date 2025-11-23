@@ -302,7 +302,7 @@ export GRAPHPOST_ADMIN_SECRET=mysecret
 
 # Use in requests
 curl -X POST http://localhost:8080/v1/graphql \
-  -H "X-Hasura-Admin-Secret: mysecret" \
+  -H "X-Admin-Secret: mysecret" \
   -H "Content-Type: application/json" \
   -d '{"query": "{ users { id } }"}'
 ```
@@ -324,10 +324,10 @@ JWT Payload format:
 ```json
 {
   "sub": "user-id",
-  "https://hasura.io/jwt/claims": {
-    "x-hasura-default-role": "user",
-    "x-hasura-allowed-roles": ["user", "admin"],
-    "x-hasura-user-id": "user-id"
+  "https://graphpost.io/jwt/claims": {
+    "x-graphpost-default-role": "user",
+    "x-graphpost-allowed-roles": ["user", "admin"],
+    "x-graphpost-user-id": "user-id"
   }
 }
 ```
@@ -339,17 +339,17 @@ GraphPost supports a Hasura-compatible Metadata API for managing the schema:
 ```bash
 # Export metadata
 curl -X POST http://localhost:8080/v1/metadata \
-  -H "X-Hasura-Admin-Secret: mysecret" \
+  -H "X-Admin-Secret: mysecret" \
   -d '{"type": "export_metadata", "args": {}}'
 
 # Reload metadata
 curl -X POST http://localhost:8080/v1/metadata \
-  -H "X-Hasura-Admin-Secret: mysecret" \
+  -H "X-Admin-Secret: mysecret" \
   -d '{"type": "reload_metadata", "args": {}}'
 
 # Track table
 curl -X POST http://localhost:8080/v1/metadata \
-  -H "X-Hasura-Admin-Secret: mysecret" \
+  -H "X-Admin-Secret: mysecret" \
   -d '{"type": "track_table", "args": {"table": "users", "schema": "public"}}'
 ```
 
@@ -359,7 +359,7 @@ Create event triggers to capture database changes:
 
 ```bash
 curl -X POST http://localhost:8080/v1/metadata \
-  -H "X-Hasura-Admin-Secret: mysecret" \
+  -H "X-Admin-Secret: mysecret" \
   -d '{
     "type": "create_event_trigger",
     "args": {

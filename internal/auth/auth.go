@@ -71,7 +71,7 @@ func NewAuthenticator(cfg *config.AuthConfig) *Authenticator {
 // AuthenticateRequest authenticates an HTTP request
 func (a *Authenticator) AuthenticateRequest(r *http.Request) (*Session, error) {
 	// Check admin secret
-	adminSecret := r.Header.Get("X-Hasura-Admin-Secret")
+	adminSecret := r.Header.Get("X-Admin-Secret")
 	if adminSecret != "" && adminSecret == a.config.AdminSecret {
 		return &Session{
 			Role:    "admin",
@@ -177,14 +177,14 @@ func (a *Authenticator) ValidateJWT(token string) (*Session, error) {
 	}
 
 	// Extract role
-	if role, ok := claims["x-hasura-default-role"].(string); ok {
+	if role, ok := claims["x-graphpost-default-role"].(string); ok {
 		session.Role = role
 	} else {
 		session.Role = a.config.DefaultRole
 	}
 
 	// Extract allowed roles
-	if allowedRoles, ok := claims["x-hasura-allowed-roles"].([]interface{}); ok {
+	if allowedRoles, ok := claims["x-graphpost-allowed-roles"].([]interface{}); ok {
 		for _, r := range allowedRoles {
 			if roleStr, ok := r.(string); ok {
 				session.AllowedRoles = append(session.AllowedRoles, roleStr)
@@ -236,10 +236,10 @@ func (a *Authenticator) authenticateViaWebhook(r *http.Request) (*Session, error
 		Claims: webhookResponse,
 	}
 
-	if role, ok := webhookResponse["X-Hasura-Role"].(string); ok {
+	if role, ok := webhookResponse["X-GraphPost-Role"].(string); ok {
 		session.Role = role
 	}
-	if userID, ok := webhookResponse["X-Hasura-User-Id"].(string); ok {
+	if userID, ok := webhookResponse["X-GraphPost-User-Id"].(string); ok {
 		session.UserID = userID
 	}
 

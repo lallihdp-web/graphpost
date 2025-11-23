@@ -24,7 +24,7 @@
     "admin_secret": "",
     "jwt_secret": "",
     "jwt_algorithm": "HS256",
-    "jwt_claims_namespace": "https://hasura.io/jwt/claims",
+    "jwt_claims_namespace": "https://graphpost.io/jwt/claims",
     "unauthorized_role": "anonymous",
     "allowed_roles": ["user", "admin"],
     "default_role": "user",
@@ -46,7 +46,7 @@
     "enabled": true,
     "allowed_origins": ["*"],
     "allowed_methods": ["GET", "POST", "OPTIONS"],
-    "allowed_headers": ["Content-Type", "Authorization", "X-Hasura-Admin-Secret"],
+    "allowed_headers": ["Content-Type", "Authorization", "X-Admin-Secret"],
     "allow_credentials": true,
     "max_age": 86400
   }
