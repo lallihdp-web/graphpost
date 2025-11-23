@@ -96,7 +96,20 @@ func (s *Server) Start() error {
 
 // Stop stops the HTTP server
 func (s *Server) Stop(ctx context.Context) error {
+	if s.server == nil {
+		return nil
+	}
 	return s.server.Shutdown(ctx)
+}
+
+// Name returns the component name for shutdown manager
+func (s *Server) Name() string {
+	return "http-server"
+}
+
+// Shutdown implements the ShutdownComponent interface
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.Stop(ctx)
 }
 
 // handleGraphQL handles GraphQL requests

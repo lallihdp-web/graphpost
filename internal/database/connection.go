@@ -2,7 +2,11 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/graphpost/graphpost/internal/config"
@@ -11,10 +15,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrConnectionClosed is returned when trying to use a closed connection
+var ErrConnectionClosed = errors.New("database connection is closed")
+
+// ErrShuttingDown is returned when trying to acquire connections during shutdown
+var ErrShuttingDown = errors.New("database connection is shutting down")
+
 // Connection manages the database connection pool using pgx
 type Connection struct {
-	pool   *pgxpool.Pool
-	config *config.DatabaseConfig
+	pool          *pgxpool.Pool
+	config        *config.DatabaseConfig
+	shuttingDown  atomic.Bool
+	activeQueries atomic.Int64
+	mu            sync.RWMutex
+	closeOnce     sync.Once
+	closed        chan struct{}
 }
 
 // NewConnection creates a new database connection pool
@@ -117,6 +132,7 @@ func NewConnection(cfg *config.DatabaseConfig) (*Connection, error) {
 	return &Connection{
 		pool:   pool,
 		config: cfg,
+		closed: make(chan struct{}),
 	}, nil
 }
 
@@ -125,10 +141,116 @@ func (c *Connection) Pool() *pgxpool.Pool {
 	return c.pool
 }
 
-// Close closes the database connection pool
+// Close closes the database connection pool immediately
 func (c *Connection) Close() error {
-	c.pool.Close()
-	return nil
+	var err error
+	c.closeOnce.Do(func() {
+		c.shuttingDown.Store(true)
+		c.pool.Close()
+		close(c.closed)
+		log.Printf("[Database] Connection pool closed")
+	})
+	return err
+}
+
+// GracefulClose gracefully closes the database connection pool
+// It waits for active queries to complete before closing
+func (c *Connection) GracefulClose(ctx context.Context) error {
+	// Mark as shutting down - new queries will be rejected
+	if !c.shuttingDown.CompareAndSwap(false, true) {
+		// Already shutting down
+		select {
+		case <-c.closed:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	log.Printf("[Database] Starting graceful shutdown...")
+
+	// Get pool stats before shutdown
+	stats := c.pool.Stat()
+	log.Printf("[Database] Pool stats before shutdown: total=%d, acquired=%d, idle=%d",
+		stats.TotalConns(), stats.AcquiredConns(), stats.IdleConns())
+
+	// Wait for active queries to complete
+	if err := c.waitForQueries(ctx); err != nil {
+		log.Printf("[Database] Warning: %v", err)
+	}
+
+	// Close the pool
+	var closeErr error
+	c.closeOnce.Do(func() {
+		c.pool.Close()
+		close(c.closed)
+		log.Printf("[Database] Connection pool closed gracefully")
+	})
+
+	return closeErr
+}
+
+// waitForQueries waits for active queries to complete
+func (c *Connection) waitForQueries(ctx context.Context) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		active := c.activeQueries.Load()
+		if active == 0 {
+			log.Printf("[Database] All queries completed")
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			remaining := c.activeQueries.Load()
+			return fmt.Errorf("shutdown timeout: %d queries still active", remaining)
+		case <-ticker.C:
+			log.Printf("[Database] Waiting for %d active queries to complete...", active)
+		}
+	}
+}
+
+// Name returns the component name for shutdown manager
+func (c *Connection) Name() string {
+	return "database"
+}
+
+// Shutdown implements the ShutdownComponent interface
+func (c *Connection) Shutdown(ctx context.Context) error {
+	return c.GracefulClose(ctx)
+}
+
+// IsShuttingDown returns true if the connection is shutting down
+func (c *Connection) IsShuttingDown() bool {
+	return c.shuttingDown.Load()
+}
+
+// IsClosed returns true if the connection is closed
+func (c *Connection) IsClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ActiveQueries returns the number of active queries
+func (c *Connection) ActiveQueries() int64 {
+	return c.activeQueries.Load()
+}
+
+// trackQuery wraps a query execution to track active queries
+func (c *Connection) trackQuery() (func(), error) {
+	if c.shuttingDown.Load() {
+		return nil, ErrShuttingDown
+	}
+	c.activeQueries.Add(1)
+	return func() {
+		c.activeQueries.Add(-1)
+	}, nil
 }
 
 // Ping tests the database connection

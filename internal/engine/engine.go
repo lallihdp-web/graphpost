@@ -96,25 +96,55 @@ func (e *Engine) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the engine
+// Stop stops the engine with graceful shutdown
 func (e *Engine) Stop(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	var errs []error
+
+	// Stop subscription manager first (stops accepting new subscriptions)
 	if e.subManager != nil {
-		e.subManager.Stop(ctx)
+		if err := e.subManager.Stop(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("subscription manager: %w", err))
+		}
 	}
 
+	// Stop event trigger manager
 	if e.triggerManager != nil {
 		e.triggerManager.Stop()
 	}
 
+	// Gracefully close database connection (waits for active queries)
 	if e.dbConn != nil {
-		return e.dbConn.Close()
+		if err := e.dbConn.GracefulClose(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("database: %w", err))
+		}
 	}
 
 	e.ready = false
+
+	if len(errs) > 0 {
+		return fmt.Errorf("shutdown errors: %v", errs)
+	}
 	return nil
+}
+
+// Name returns the component name for shutdown manager
+func (e *Engine) Name() string {
+	return "engine"
+}
+
+// Shutdown implements the ShutdownComponent interface
+func (e *Engine) Shutdown(ctx context.Context) error {
+	return e.Stop(ctx)
+}
+
+// GetDBConnection returns the database connection
+func (e *Engine) GetDBConnection() *database.Connection {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.dbConn
 }
 
 // ExecuteQuery executes a GraphQL query
