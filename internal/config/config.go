@@ -114,15 +114,70 @@ type PoolConfig struct {
 
 // AuthConfig holds authentication configuration
 type AuthConfig struct {
-	Enabled           bool     `json:"enabled"`
-	AdminSecret       string   `json:"admin_secret"`
-	JWTSecret         string   `json:"jwt_secret"`
-	JWTAlgorithm      string   `json:"jwt_algorithm"`
-	JWTClaimsNamespace string  `json:"jwt_claims_namespace"`
-	UnauthorizedRole  string   `json:"unauthorized_role"`
-	AllowedRoles      []string `json:"allowed_roles"`
-	DefaultRole       string   `json:"default_role"`
-	WebhookURL        string   `json:"webhook_url"`
+	Enabled           bool       `json:"enabled"`
+	AdminSecret       string     `json:"admin_secret"`
+	JWTSecret         string     `json:"jwt_secret"`          // Legacy: simple secret for HS256
+	JWTAlgorithm      string     `json:"jwt_algorithm"`       // Legacy: algorithm type
+	JWTClaimsNamespace string    `json:"jwt_claims_namespace"`
+	UnauthorizedRole  string     `json:"unauthorized_role"`
+	AllowedRoles      []string   `json:"allowed_roles"`
+	DefaultRole       string     `json:"default_role"`
+	WebhookURL        string     `json:"webhook_url"`
+	JWT               *JWTConfig `json:"jwt,omitempty"`       // New: detailed JWT config
+}
+
+// JWTConfig holds detailed JWT verification configuration
+type JWTConfig struct {
+	// Type specifies the key type: "HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"
+	Type string `json:"type"`
+
+	// Key is the secret (for HMAC) or public key (for RSA/ECDSA) in PEM format
+	Key string `json:"key,omitempty"`
+
+	// JWKUrl is the URL to fetch JSON Web Key Set for key rotation
+	JWKUrl string `json:"jwk_url,omitempty"`
+
+	// ClaimsNamespace is the namespace/key in JWT where Hasura/GraphPost claims are stored
+	// e.g., "https://hasura.io/jwt/claims" or "https://graphpost.io/jwt/claims"
+	ClaimsNamespace string `json:"claims_namespace,omitempty"`
+
+	// ClaimsNamespacePath is a JSON path to nested claims (alternative to ClaimsNamespace)
+	// e.g., "$.hasura.claims"
+	ClaimsNamespacePath string `json:"claims_namespace_path,omitempty"`
+
+	// ClaimsMap allows custom mapping of JWT claims to session variables
+	// e.g., {"x-hasura-user-id": {"path": "$.sub"}, "x-hasura-org-id": {"path": "$.org.id"}}
+	ClaimsMap map[string]ClaimMapping `json:"claims_map,omitempty"`
+
+	// Issuer validates the "iss" claim if set
+	Issuer string `json:"issuer,omitempty"`
+
+	// Audience validates the "aud" claim if set
+	Audience string `json:"audience,omitempty"`
+
+	// AllowedSkew is the allowed clock skew for expiration validation (in seconds)
+	AllowedSkew int `json:"allowed_skew,omitempty"`
+
+	// Header specifies custom header to read JWT from (default: "Authorization")
+	Header *JWTHeader `json:"header,omitempty"`
+}
+
+// ClaimMapping defines how to map a JWT claim to a session variable
+type ClaimMapping struct {
+	// Path is a JSON path to extract the value (e.g., "$.user.id")
+	Path string `json:"path,omitempty"`
+
+	// Default is the default value if the claim is not found
+	Default interface{} `json:"default,omitempty"`
+}
+
+// JWTHeader specifies where to read the JWT from
+type JWTHeader struct {
+	// Type is either "Authorization" or "Cookie"
+	Type string `json:"type"`
+
+	// Name is the header name (for Authorization) or cookie name (for Cookie)
+	Name string `json:"name"`
 }
 
 // ConsoleConfig holds admin console configuration
