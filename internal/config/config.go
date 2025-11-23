@@ -8,13 +8,15 @@ import (
 
 // Config represents the main configuration for GraphPost
 type Config struct {
-	Server   ServerConfig   `json:"server"`
-	Database DatabaseConfig `json:"database"`
-	Auth     AuthConfig     `json:"auth"`
-	Console  ConsoleConfig  `json:"console"`
-	Events   EventsConfig   `json:"events"`
-	CORS     CORSConfig     `json:"cors"`
-	GraphQL  GraphQLConfig  `json:"graphql"`
+	Server    ServerConfig    `json:"server"`
+	Database  DatabaseConfig  `json:"database"`
+	Auth      AuthConfig      `json:"auth"`
+	Console   ConsoleConfig   `json:"console"`
+	Events    EventsConfig    `json:"events"`
+	CORS      CORSConfig      `json:"cors"`
+	GraphQL   GraphQLConfig   `json:"graphql"`
+	Telemetry TelemetryConfig `json:"telemetry"`
+	Logging   LoggingConfig   `json:"logging"`
 }
 
 // ServerConfig holds server-related configuration
@@ -147,6 +149,73 @@ type CORSConfig struct {
 	MaxAge           int      `json:"max_age"`
 }
 
+// TelemetryConfig holds OpenTelemetry configuration
+type TelemetryConfig struct {
+	// Enabled enables OpenTelemetry integration
+	Enabled bool `json:"enabled"`
+
+	// ServiceName is the name of this service in traces
+	ServiceName string `json:"service_name"`
+
+	// ServiceVersion is the version of this service
+	ServiceVersion string `json:"service_version"`
+
+	// OTLPEndpoint is the OpenTelemetry collector endpoint
+	// Example: "localhost:4317" for gRPC, "localhost:4318" for HTTP
+	OTLPEndpoint string `json:"otlp_endpoint"`
+
+	// OTLPProtocol is the protocol to use: "grpc" or "http"
+	OTLPProtocol string `json:"otlp_protocol"`
+
+	// OTLPInsecure disables TLS for the OTLP connection
+	OTLPInsecure bool `json:"otlp_insecure"`
+
+	// SampleRate is the sampling rate for traces (0.0 to 1.0)
+	// 1.0 = sample all traces, 0.1 = sample 10% of traces
+	SampleRate float64 `json:"sample_rate"`
+
+	// TraceQueries enables tracing for individual database queries
+	TraceQueries bool `json:"trace_queries"`
+
+	// TraceResolvers enables tracing for GraphQL resolvers
+	TraceResolvers bool `json:"trace_resolvers"`
+}
+
+// LoggingConfig holds logging configuration
+type LoggingConfig struct {
+	// Level is the minimum log level (debug, info, warn, error)
+	Level string `json:"level"`
+
+	// Format is the log format (json, text)
+	Format string `json:"format"`
+
+	// Output is where logs are written (stdout, stderr, or file path)
+	Output string `json:"output"`
+
+	// QueryLog enables SQL query logging
+	QueryLog bool `json:"query_log"`
+
+	// QueryLogLevel is the level for query logs (debug, info)
+	QueryLogLevel string `json:"query_log_level"`
+
+	// SlowQueryThreshold is the duration above which queries are logged as slow
+	// Set to 0 to disable slow query logging
+	// This helps identify queries that need optimization (indexes, partitioning)
+	SlowQueryThreshold time.Duration `json:"slow_query_threshold"`
+
+	// SlowQueryLogLevel is the level for slow query logs (warn, error)
+	SlowQueryLogLevel string `json:"slow_query_log_level"`
+
+	// LogQueryParams includes query parameters in logs (be careful with sensitive data)
+	LogQueryParams bool `json:"log_query_params"`
+
+	// RequestLog enables HTTP request logging
+	RequestLog bool `json:"request_log"`
+
+	// IncludeStackTrace includes stack traces for errors
+	IncludeStackTrace bool `json:"include_stack_trace"`
+}
+
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
@@ -218,6 +287,29 @@ func DefaultConfig() *Config {
 			EnableAggregations:  true,
 			QueryDepthLimit:     0, // Unlimited
 			QueryTimeout:        0, // No timeout
+		},
+		Telemetry: TelemetryConfig{
+			Enabled:        false,
+			ServiceName:    "graphpost",
+			ServiceVersion: "1.0.0",
+			OTLPEndpoint:   "localhost:4317",
+			OTLPProtocol:   "grpc",
+			OTLPInsecure:   true,
+			SampleRate:     1.0,
+			TraceQueries:   true,
+			TraceResolvers: true,
+		},
+		Logging: LoggingConfig{
+			Level:              "info",
+			Format:             "json",
+			Output:             "stdout",
+			QueryLog:           false,
+			QueryLogLevel:      "debug",
+			SlowQueryThreshold: 1 * time.Second,
+			SlowQueryLogLevel:  "warn",
+			LogQueryParams:     false,
+			RequestLog:         true,
+			IncludeStackTrace:  false,
 		},
 	}
 }
@@ -325,6 +417,72 @@ func LoadFromEnv() *Config {
 		if d, err := time.ParseDuration(queryTimeout); err == nil {
 			config.GraphQL.QueryTimeout = d
 		}
+	}
+
+	// Telemetry configuration
+	if telemetryEnabled := os.Getenv("GRAPHPOST_TELEMETRY_ENABLED"); telemetryEnabled == "true" {
+		config.Telemetry.Enabled = true
+	}
+	if serviceName := os.Getenv("GRAPHPOST_TELEMETRY_SERVICE_NAME"); serviceName != "" {
+		config.Telemetry.ServiceName = serviceName
+	}
+	if serviceVersion := os.Getenv("GRAPHPOST_TELEMETRY_SERVICE_VERSION"); serviceVersion != "" {
+		config.Telemetry.ServiceVersion = serviceVersion
+	}
+	if otlpEndpoint := os.Getenv("GRAPHPOST_OTLP_ENDPOINT"); otlpEndpoint != "" {
+		config.Telemetry.OTLPEndpoint = otlpEndpoint
+	}
+	if otlpProtocol := os.Getenv("GRAPHPOST_OTLP_PROTOCOL"); otlpProtocol != "" {
+		config.Telemetry.OTLPProtocol = otlpProtocol
+	}
+	if otlpInsecure := os.Getenv("GRAPHPOST_OTLP_INSECURE"); otlpInsecure == "false" {
+		config.Telemetry.OTLPInsecure = false
+	}
+	if sampleRate := os.Getenv("GRAPHPOST_TELEMETRY_SAMPLE_RATE"); sampleRate != "" {
+		var v float64
+		if err := json.Unmarshal([]byte(sampleRate), &v); err == nil {
+			config.Telemetry.SampleRate = v
+		}
+	}
+	if traceQueries := os.Getenv("GRAPHPOST_TELEMETRY_TRACE_QUERIES"); traceQueries == "false" {
+		config.Telemetry.TraceQueries = false
+	}
+	if traceResolvers := os.Getenv("GRAPHPOST_TELEMETRY_TRACE_RESOLVERS"); traceResolvers == "false" {
+		config.Telemetry.TraceResolvers = false
+	}
+
+	// Logging configuration
+	if logLevel := os.Getenv("GRAPHPOST_LOG_LEVEL"); logLevel != "" {
+		config.Logging.Level = logLevel
+	}
+	if logFormat := os.Getenv("GRAPHPOST_LOG_FORMAT"); logFormat != "" {
+		config.Logging.Format = logFormat
+	}
+	if logOutput := os.Getenv("GRAPHPOST_LOG_OUTPUT"); logOutput != "" {
+		config.Logging.Output = logOutput
+	}
+	if queryLog := os.Getenv("GRAPHPOST_LOG_QUERIES"); queryLog == "true" {
+		config.Logging.QueryLog = true
+	}
+	if queryLogLevel := os.Getenv("GRAPHPOST_LOG_QUERY_LEVEL"); queryLogLevel != "" {
+		config.Logging.QueryLogLevel = queryLogLevel
+	}
+	if slowQueryThreshold := os.Getenv("GRAPHPOST_SLOW_QUERY_THRESHOLD"); slowQueryThreshold != "" {
+		if d, err := time.ParseDuration(slowQueryThreshold); err == nil {
+			config.Logging.SlowQueryThreshold = d
+		}
+	}
+	if slowQueryLogLevel := os.Getenv("GRAPHPOST_SLOW_QUERY_LOG_LEVEL"); slowQueryLogLevel != "" {
+		config.Logging.SlowQueryLogLevel = slowQueryLogLevel
+	}
+	if logQueryParams := os.Getenv("GRAPHPOST_LOG_QUERY_PARAMS"); logQueryParams == "true" {
+		config.Logging.LogQueryParams = true
+	}
+	if requestLog := os.Getenv("GRAPHPOST_LOG_REQUESTS"); requestLog == "false" {
+		config.Logging.RequestLog = false
+	}
+	if includeStackTrace := os.Getenv("GRAPHPOST_LOG_STACK_TRACE"); includeStackTrace == "true" {
+		config.Logging.IncludeStackTrace = true
 	}
 
 	return config

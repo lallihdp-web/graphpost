@@ -199,10 +199,16 @@ type ConsoleConfig struct {
 
 ```go
 type LoggingConfig struct {
-    Level       string `json:"level"`
-    Format      string `json:"format"`
-    QueryLog    bool   `json:"query_log"`
-    RequestLog  bool   `json:"request_log"`
+    Level              string        `json:"level"`
+    Format             string        `json:"format"`
+    Output             string        `json:"output"`
+    QueryLog           bool          `json:"query_log"`
+    QueryLogLevel      string        `json:"query_log_level"`
+    SlowQueryThreshold time.Duration `json:"slow_query_threshold"`
+    SlowQueryLogLevel  string        `json:"slow_query_log_level"`
+    LogQueryParams     bool          `json:"log_query_params"`
+    RequestLog         bool          `json:"request_log"`
+    IncludeStackTrace  bool          `json:"include_stack_trace"`
 }
 ```
 
@@ -210,8 +216,123 @@ type LoggingConfig struct {
 |-----------|---------------------|---------|-------------|
 | `level` | `GRAPHPOST_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 | `format` | `GRAPHPOST_LOG_FORMAT` | `json` | Log format (json, text) |
+| `output` | `GRAPHPOST_LOG_OUTPUT` | `stdout` | Log output (stdout, stderr, file path) |
 | `query_log` | `GRAPHPOST_LOG_QUERIES` | `false` | Log SQL queries |
+| `query_log_level` | `GRAPHPOST_LOG_QUERY_LEVEL` | `debug` | Level for query logs |
+| `slow_query_threshold` | `GRAPHPOST_SLOW_QUERY_THRESHOLD` | `1s` | Duration above which queries are logged as slow |
+| `slow_query_log_level` | `GRAPHPOST_SLOW_QUERY_LOG_LEVEL` | `warn` | Level for slow query logs |
+| `log_query_params` | `GRAPHPOST_LOG_QUERY_PARAMS` | `false` | Include query parameters in logs |
 | `request_log` | `GRAPHPOST_LOG_REQUESTS` | `true` | Log HTTP requests |
+| `include_stack_trace` | `GRAPHPOST_LOG_STACK_TRACE` | `false` | Include stack traces for errors |
+
+### Query Logging for Database Optimization
+
+Enable query logging to identify slow queries that need optimization:
+
+```bash
+# Enable query logging
+GRAPHPOST_LOG_QUERIES=true
+
+# Set slow query threshold (queries longer than this are flagged)
+GRAPHPOST_SLOW_QUERY_THRESHOLD=500ms
+
+# Log slow queries as warnings
+GRAPHPOST_SLOW_QUERY_LOG_LEVEL=warn
+```
+
+**Sample slow query log output:**
+```json
+{
+  "timestamp": "2024-01-15T10:30:45.123Z",
+  "level": "warn",
+  "message": "Slow query detected",
+  "fields": {
+    "query": "SELECT * FROM users WHERE status = $1 ORDER BY created_at",
+    "duration": "1.234s",
+    "duration_ms": 1234,
+    "table": "users",
+    "operation": "SELECT",
+    "slow_query": true,
+    "threshold": "1s"
+  }
+}
+```
+
+**Optimization suggestions provided:**
+- Missing indexes detection
+- Full table scan warnings
+- Recommendations for partitioning large tables
+- EXPLAIN ANALYZE hints
+
+## Telemetry Configuration (OpenTelemetry)
+
+```go
+type TelemetryConfig struct {
+    Enabled        bool    `json:"enabled"`
+    ServiceName    string  `json:"service_name"`
+    ServiceVersion string  `json:"service_version"`
+    OTLPEndpoint   string  `json:"otlp_endpoint"`
+    OTLPProtocol   string  `json:"otlp_protocol"`
+    OTLPInsecure   bool    `json:"otlp_insecure"`
+    SampleRate     float64 `json:"sample_rate"`
+    TraceQueries   bool    `json:"trace_queries"`
+    TraceResolvers bool    `json:"trace_resolvers"`
+}
+```
+
+| Parameter | Environment Variable | Default | Description |
+|-----------|---------------------|---------|-------------|
+| `enabled` | `GRAPHPOST_TELEMETRY_ENABLED` | `false` | Enable OpenTelemetry integration |
+| `service_name` | `GRAPHPOST_TELEMETRY_SERVICE_NAME` | `graphpost` | Service name in traces |
+| `service_version` | `GRAPHPOST_TELEMETRY_SERVICE_VERSION` | `1.0.0` | Service version |
+| `otlp_endpoint` | `GRAPHPOST_OTLP_ENDPOINT` | `localhost:4317` | OTLP collector endpoint |
+| `otlp_protocol` | `GRAPHPOST_OTLP_PROTOCOL` | `grpc` | Protocol: grpc or http |
+| `otlp_insecure` | `GRAPHPOST_OTLP_INSECURE` | `true` | Disable TLS for OTLP |
+| `sample_rate` | `GRAPHPOST_TELEMETRY_SAMPLE_RATE` | `1.0` | Trace sampling rate (0.0-1.0) |
+| `trace_queries` | `GRAPHPOST_TELEMETRY_TRACE_QUERIES` | `true` | Trace individual DB queries |
+| `trace_resolvers` | `GRAPHPOST_TELEMETRY_TRACE_RESOLVERS` | `true` | Trace GraphQL resolvers |
+
+### OpenTelemetry Setup
+
+**With Jaeger:**
+```bash
+# Start Jaeger with OTLP support
+docker run -d --name jaeger \
+  -e COLLECTOR_OTLP_ENABLED=true \
+  -p 16686:16686 \
+  -p 4317:4317 \
+  -p 4318:4318 \
+  jaegertracing/all-in-one:latest
+
+# Configure GraphPost
+GRAPHPOST_TELEMETRY_ENABLED=true
+GRAPHPOST_OTLP_ENDPOINT=localhost:4317
+```
+
+**With Grafana Tempo:**
+```bash
+GRAPHPOST_TELEMETRY_ENABLED=true
+GRAPHPOST_OTLP_ENDPOINT=tempo:4317
+GRAPHPOST_OTLP_PROTOCOL=grpc
+```
+
+**With Datadog:**
+```bash
+GRAPHPOST_TELEMETRY_ENABLED=true
+GRAPHPOST_OTLP_ENDPOINT=localhost:4317
+GRAPHPOST_TELEMETRY_SERVICE_NAME=my-graphql-api
+```
+
+### Trace Sampling
+
+For high-traffic production environments:
+```bash
+# Sample 10% of traces
+GRAPHPOST_TELEMETRY_SAMPLE_RATE=0.1
+
+# Sample all traces (development)
+GRAPHPOST_TELEMETRY_SAMPLE_RATE=1.0
+```
 
 ## Configuration File Examples
 
@@ -253,8 +374,24 @@ type LoggingConfig struct {
   "logging": {
     "level": "info",
     "format": "json",
-    "query_log": false,
+    "output": "stdout",
+    "query_log": true,
+    "query_log_level": "debug",
+    "slow_query_threshold": "1s",
+    "slow_query_log_level": "warn",
+    "log_query_params": false,
     "request_log": true
+  },
+  "telemetry": {
+    "enabled": true,
+    "service_name": "my-graphql-api",
+    "service_version": "1.0.0",
+    "otlp_endpoint": "localhost:4317",
+    "otlp_protocol": "grpc",
+    "otlp_insecure": true,
+    "sample_rate": 1.0,
+    "trace_queries": true,
+    "trace_resolvers": true
   }
 }
 ```
@@ -297,8 +434,24 @@ console:
 logging:
   level: info
   format: json
-  query_log: false
+  output: stdout
+  query_log: true
+  query_log_level: debug
+  slow_query_threshold: 1s
+  slow_query_log_level: warn
+  log_query_params: false
   request_log: true
+
+telemetry:
+  enabled: true
+  service_name: my-graphql-api
+  service_version: 1.0.0
+  otlp_endpoint: localhost:4317
+  otlp_protocol: grpc
+  otlp_insecure: true
+  sample_rate: 1.0
+  trace_queries: true
+  trace_resolvers: true
 ```
 
 ## Command-Line Usage
