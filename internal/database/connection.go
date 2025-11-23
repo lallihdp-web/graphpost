@@ -31,15 +31,62 @@ func NewConnection(cfg *config.DatabaseConfig) (*Connection, error) {
 		return nil, fmt.Errorf("failed to parse connection string: %w", err)
 	}
 
-	// Configure pool settings
-	poolConfig.MaxConns = int32(cfg.MaxOpenConns)
-	poolConfig.MinConns = int32(cfg.MaxIdleConns)
-	poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
-	poolConfig.MaxConnIdleTime = 30 * time.Minute
-	poolConfig.HealthCheckPeriod = 1 * time.Minute
+	// Apply pgx pool configuration
+	poolCfg := cfg.Pool
 
-	// Configure connection settings
-	poolConfig.ConnConfig.ConnectTimeout = 10 * time.Second
+	// Pool size settings
+	if poolCfg.MinConns > 0 {
+		poolConfig.MinConns = poolCfg.MinConns
+	} else if cfg.MaxIdleConns > 0 {
+		// Legacy fallback
+		poolConfig.MinConns = int32(cfg.MaxIdleConns)
+	} else {
+		poolConfig.MinConns = 5
+	}
+
+	if poolCfg.MaxConns > 0 {
+		poolConfig.MaxConns = poolCfg.MaxConns
+	} else if cfg.MaxOpenConns > 0 {
+		// Legacy fallback
+		poolConfig.MaxConns = int32(cfg.MaxOpenConns)
+	} else {
+		poolConfig.MaxConns = 50
+	}
+
+	// Connection lifetime settings
+	if poolCfg.MaxConnLifetime > 0 {
+		poolConfig.MaxConnLifetime = poolCfg.MaxConnLifetime
+	} else if cfg.ConnMaxLifetime > 0 {
+		// Legacy fallback
+		poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
+	} else {
+		poolConfig.MaxConnLifetime = 1 * time.Hour
+	}
+
+	if poolCfg.MaxConnIdleTime > 0 {
+		poolConfig.MaxConnIdleTime = poolCfg.MaxConnIdleTime
+	} else {
+		poolConfig.MaxConnIdleTime = 30 * time.Minute
+	}
+
+	// Health check settings
+	if poolCfg.HealthCheckPeriod > 0 {
+		poolConfig.HealthCheckPeriod = poolCfg.HealthCheckPeriod
+	} else {
+		poolConfig.HealthCheckPeriod = 1 * time.Minute
+	}
+
+	// Connection timeout
+	connectTimeout := 10 * time.Second
+	if poolCfg.ConnectTimeout > 0 {
+		connectTimeout = poolCfg.ConnectTimeout
+	}
+	poolConfig.ConnConfig.ConnectTimeout = connectTimeout
+
+	// Simple protocol mode (useful for PgBouncer transaction pooling)
+	if poolCfg.PreferSimpleProtocol {
+		poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	}
 
 	// Add after connect hook for setting search_path
 	poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
@@ -51,7 +98,7 @@ func NewConnection(cfg *config.DatabaseConfig) (*Connection, error) {
 	}
 
 	// Create connection pool
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
@@ -59,10 +106,12 @@ func NewConnection(cfg *config.DatabaseConfig) (*Connection, error) {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	// Test connection
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+	// Test connection (unless lazy connect is enabled)
+	if !poolCfg.LazyConnect {
+		if err := pool.Ping(ctx); err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("failed to ping database: %w", err)
+		}
 	}
 
 	return &Connection{

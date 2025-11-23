@@ -52,19 +52,30 @@ type ServerConfig struct {
 
 ```go
 type DatabaseConfig struct {
-    Host         string `json:"host"`
-    Port         int    `json:"port"`
-    User         string `json:"user"`
-    Password     string `json:"password"`
-    Database     string `json:"database"`
-    SSLMode      string `json:"sslmode"`
-    Schema       string `json:"schema"`
-    MaxOpenConns int    `json:"max_open_conns"`
-    MaxIdleConns int    `json:"max_idle_conns"`
-    PoolMinConns int    `json:"pool_min_conns"`
-    PoolMaxConns int    `json:"pool_max_conns"`
+    Host     string     `json:"host"`
+    Port     int        `json:"port"`
+    User     string     `json:"user"`
+    Password string     `json:"password"`
+    Database string     `json:"database"`
+    SSLMode  string     `json:"ssl_mode"`
+    Schema   string     `json:"schema"`
+    Pool     PoolConfig `json:"pool"`
+}
+
+type PoolConfig struct {
+    MinConns             int32         `json:"min_conns"`
+    MaxConns             int32         `json:"max_conns"`
+    MaxConnLifetime      time.Duration `json:"max_conn_lifetime"`
+    MaxConnIdleTime      time.Duration `json:"max_conn_idle_time"`
+    HealthCheckPeriod    time.Duration `json:"health_check_period"`
+    ConnectTimeout       time.Duration `json:"connect_timeout"`
+    QueryTimeout         time.Duration `json:"query_timeout"`
+    LazyConnect          bool          `json:"lazy_connect"`
+    PreferSimpleProtocol bool          `json:"prefer_simple_protocol"`
 }
 ```
+
+### Basic Database Parameters
 
 | Parameter | Environment Variable | Default | Description |
 |-----------|---------------------|---------|-------------|
@@ -73,12 +84,22 @@ type DatabaseConfig struct {
 | `user` | `GRAPHPOST_DB_USER` | `postgres` | Database user |
 | `password` | `GRAPHPOST_DB_PASSWORD` | `` | Database password |
 | `database` | `GRAPHPOST_DB_NAME` | `postgres` | Database name |
-| `sslmode` | `GRAPHPOST_DB_SSLMODE` | `disable` | SSL mode |
+| `ssl_mode` | `GRAPHPOST_DB_SSLMODE` | `disable` | SSL mode (disable, require, verify-ca, verify-full) |
 | `schema` | `GRAPHPOST_DB_SCHEMA` | `public` | Default schema |
-| `max_open_conns` | `GRAPHPOST_DB_MAX_OPEN_CONNS` | `50` | Maximum open connections |
-| `max_idle_conns` | `GRAPHPOST_DB_MAX_IDLE_CONNS` | `10` | Maximum idle connections |
-| `pool_min_conns` | `GRAPHPOST_DB_POOL_MIN_CONNS` | `5` | Minimum pool connections |
-| `pool_max_conns` | `GRAPHPOST_DB_POOL_MAX_CONNS` | `50` | Maximum pool connections |
+
+### pgx Connection Pool Configuration
+
+| Parameter | Environment Variable | Default | Description |
+|-----------|---------------------|---------|-------------|
+| `pool.min_conns` | `GRAPHPOST_POOL_MIN_CONNS` | `5` | Minimum connections kept open (even when idle) |
+| `pool.max_conns` | `GRAPHPOST_POOL_MAX_CONNS` | `50` | Maximum connections in pool |
+| `pool.max_conn_lifetime` | `GRAPHPOST_POOL_MAX_CONN_LIFETIME` | `1h` | Max lifetime before connection is closed |
+| `pool.max_conn_idle_time` | `GRAPHPOST_POOL_MAX_CONN_IDLE_TIME` | `30m` | Max idle time before excess connections closed |
+| `pool.health_check_period` | `GRAPHPOST_POOL_HEALTH_CHECK_PERIOD` | `1m` | How often to health check idle connections |
+| `pool.connect_timeout` | `GRAPHPOST_POOL_CONNECT_TIMEOUT` | `10s` | Timeout for new connections |
+| `pool.query_timeout` | `GRAPHPOST_POOL_QUERY_TIMEOUT` | `0` | Default query timeout (0 = no timeout) |
+| `pool.lazy_connect` | `GRAPHPOST_POOL_LAZY_CONNECT` | `false` | Delay connection until first use |
+| `pool.prefer_simple_protocol` | `GRAPHPOST_POOL_SIMPLE_PROTOCOL` | `false` | Use simple protocol (for PgBouncer) |
 
 ### Database URL
 
@@ -86,6 +107,29 @@ Alternative to individual parameters:
 
 ```bash
 GRAPHPOST_DATABASE_URL="postgres://user:password@host:5432/database?sslmode=disable&search_path=public"
+```
+
+### Pool Tuning Guide
+
+**For high-throughput applications:**
+```bash
+GRAPHPOST_POOL_MIN_CONNS=10
+GRAPHPOST_POOL_MAX_CONNS=100
+GRAPHPOST_POOL_MAX_CONN_LIFETIME=30m
+```
+
+**For PgBouncer transaction pooling:**
+```bash
+GRAPHPOST_POOL_SIMPLE_PROTOCOL=true
+GRAPHPOST_POOL_MIN_CONNS=2
+GRAPHPOST_POOL_MAX_CONNS=20
+```
+
+**For development/low-traffic:**
+```bash
+GRAPHPOST_POOL_MIN_CONNS=1
+GRAPHPOST_POOL_MAX_CONNS=10
+GRAPHPOST_POOL_LAZY_CONNECT=true
 ```
 
 ## Authentication Configuration

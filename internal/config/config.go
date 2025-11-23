@@ -28,16 +28,64 @@ type ServerConfig struct {
 
 // DatabaseConfig holds database connection configuration
 type DatabaseConfig struct {
-	Host            string        `json:"host"`
-	Port            int           `json:"port"`
-	User            string        `json:"user"`
-	Password        string        `json:"password"`
-	Database        string        `json:"database"`
-	SSLMode         string        `json:"ssl_mode"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	Database string `json:"database"`
+	SSLMode  string `json:"ssl_mode"`
+	Schema   string `json:"schema"`
+
+	// pgx Connection Pool Configuration
+	Pool PoolConfig `json:"pool"`
+
+	// Legacy fields (mapped to Pool config for backward compatibility)
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
-	Schema          string        `json:"schema"`
+}
+
+// PoolConfig holds pgx connection pool configuration
+type PoolConfig struct {
+	// MinConns is the minimum number of connections kept open in the pool
+	// These connections are maintained even when idle
+	// Default: 5
+	MinConns int32 `json:"min_conns"`
+
+	// MaxConns is the maximum number of connections in the pool
+	// Default: 50
+	MaxConns int32 `json:"max_conns"`
+
+	// MaxConnLifetime is the maximum lifetime of a connection
+	// Connections older than this will be closed and replaced
+	// Default: 1 hour
+	MaxConnLifetime time.Duration `json:"max_conn_lifetime"`
+
+	// MaxConnIdleTime is the maximum time a connection can be idle
+	// Idle connections exceeding MinConns will be closed after this duration
+	// Default: 30 minutes
+	MaxConnIdleTime time.Duration `json:"max_conn_idle_time"`
+
+	// HealthCheckPeriod is how often health checks are performed on idle connections
+	// Default: 1 minute
+	HealthCheckPeriod time.Duration `json:"health_check_period"`
+
+	// ConnectTimeout is the timeout for establishing new connections
+	// Default: 10 seconds
+	ConnectTimeout time.Duration `json:"connect_timeout"`
+
+	// QueryTimeout is the default timeout for queries (0 = no timeout)
+	// Default: 0 (no timeout)
+	QueryTimeout time.Duration `json:"query_timeout"`
+
+	// LazyConnect delays connection creation until first use
+	// Default: false
+	LazyConnect bool `json:"lazy_connect"`
+
+	// PreferSimpleProtocol disables implicit prepared statement usage
+	// Useful when using PgBouncer in transaction pooling mode
+	// Default: false
+	PreferSimpleProtocol bool `json:"prefer_simple_protocol"`
 }
 
 // AuthConfig holds authentication configuration
@@ -91,16 +139,28 @@ func DefaultConfig() *Config {
 			MaxConnections:    1000,
 		},
 		Database: DatabaseConfig{
-			Host:            "localhost",
-			Port:            5432,
-			User:            "postgres",
-			Password:        "",
-			Database:        "postgres",
-			SSLMode:         "disable",
+			Host:     "localhost",
+			Port:     5432,
+			User:     "postgres",
+			Password: "",
+			Database: "postgres",
+			SSLMode:  "disable",
+			Schema:   "public",
+			Pool: PoolConfig{
+				MinConns:             5,
+				MaxConns:             50,
+				MaxConnLifetime:      1 * time.Hour,
+				MaxConnIdleTime:      30 * time.Minute,
+				HealthCheckPeriod:    1 * time.Minute,
+				ConnectTimeout:       10 * time.Second,
+				QueryTimeout:         0, // No timeout
+				LazyConnect:          false,
+				PreferSimpleProtocol: false,
+			},
+			// Legacy fields
 			MaxOpenConns:    50,
-			MaxIdleConns:    10,
-			ConnMaxLifetime: 30 * time.Minute,
-			Schema:          "public",
+			MaxIdleConns:    5,
+			ConnMaxLifetime: 1 * time.Hour,
 		},
 		Auth: AuthConfig{
 			Enabled:           false,
@@ -175,6 +235,51 @@ func LoadFromEnv() *Config {
 		config.Auth.JWTSecret = jwtSecret
 	}
 
+	// Pool configuration from environment variables
+	if minConns := os.Getenv("GRAPHPOST_POOL_MIN_CONNS"); minConns != "" {
+		var v int32
+		if err := json.Unmarshal([]byte(minConns), &v); err == nil {
+			config.Database.Pool.MinConns = v
+		}
+	}
+	if maxConns := os.Getenv("GRAPHPOST_POOL_MAX_CONNS"); maxConns != "" {
+		var v int32
+		if err := json.Unmarshal([]byte(maxConns), &v); err == nil {
+			config.Database.Pool.MaxConns = v
+		}
+	}
+	if maxLifetime := os.Getenv("GRAPHPOST_POOL_MAX_CONN_LIFETIME"); maxLifetime != "" {
+		if d, err := time.ParseDuration(maxLifetime); err == nil {
+			config.Database.Pool.MaxConnLifetime = d
+		}
+	}
+	if maxIdleTime := os.Getenv("GRAPHPOST_POOL_MAX_CONN_IDLE_TIME"); maxIdleTime != "" {
+		if d, err := time.ParseDuration(maxIdleTime); err == nil {
+			config.Database.Pool.MaxConnIdleTime = d
+		}
+	}
+	if healthCheck := os.Getenv("GRAPHPOST_POOL_HEALTH_CHECK_PERIOD"); healthCheck != "" {
+		if d, err := time.ParseDuration(healthCheck); err == nil {
+			config.Database.Pool.HealthCheckPeriod = d
+		}
+	}
+	if connectTimeout := os.Getenv("GRAPHPOST_POOL_CONNECT_TIMEOUT"); connectTimeout != "" {
+		if d, err := time.ParseDuration(connectTimeout); err == nil {
+			config.Database.Pool.ConnectTimeout = d
+		}
+	}
+	if queryTimeout := os.Getenv("GRAPHPOST_POOL_QUERY_TIMEOUT"); queryTimeout != "" {
+		if d, err := time.ParseDuration(queryTimeout); err == nil {
+			config.Database.Pool.QueryTimeout = d
+		}
+	}
+	if lazyConnect := os.Getenv("GRAPHPOST_POOL_LAZY_CONNECT"); lazyConnect == "true" {
+		config.Database.Pool.LazyConnect = true
+	}
+	if simpleProtocol := os.Getenv("GRAPHPOST_POOL_SIMPLE_PROTOCOL"); simpleProtocol == "true" {
+		config.Database.Pool.PreferSimpleProtocol = true
+	}
+
 	return config
 }
 
@@ -182,16 +287,27 @@ func LoadFromEnv() *Config {
 func parseDatabaseURL(url string) DatabaseConfig {
 	// Basic URL parsing - in production, use proper URL parsing
 	config := DatabaseConfig{
-		Host:            "localhost",
-		Port:            5432,
-		User:            "postgres",
-		Password:        "",
-		Database:        "postgres",
-		SSLMode:         "disable",
+		Host:     "localhost",
+		Port:     5432,
+		User:     "postgres",
+		Password: "",
+		Database: "postgres",
+		SSLMode:  "disable",
+		Schema:   "public",
+		Pool: PoolConfig{
+			MinConns:             5,
+			MaxConns:             50,
+			MaxConnLifetime:      1 * time.Hour,
+			MaxConnIdleTime:      30 * time.Minute,
+			HealthCheckPeriod:    1 * time.Minute,
+			ConnectTimeout:       10 * time.Second,
+			QueryTimeout:         0,
+			LazyConnect:          false,
+			PreferSimpleProtocol: false,
+		},
 		MaxOpenConns:    50,
-		MaxIdleConns:    10,
-		ConnMaxLifetime: 30 * time.Minute,
-		Schema:          "public",
+		MaxIdleConns:    5,
+		ConnMaxLifetime: 1 * time.Hour,
 	}
 	// URL format: postgres://user:password@host:port/database?sslmode=disable
 	// This is a simplified parser - use net/url for production
