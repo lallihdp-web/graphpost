@@ -14,6 +14,7 @@ GraphPost is a high-performance GraphQL server for PostgreSQL databases, providi
 8. [Configuration Reference](./configuration.md)
 9. [API Reference](./api.md)
 10. [Performance & Benchmarks](./benchmarks.md)
+11. [Observability (Telemetry & Logging)](#observability)
 
 ## Quick Start
 
@@ -51,12 +52,16 @@ graphpost/
 │   │   └── server.go            # HTTP server
 │   ├── events/
 │   │   └── triggers.go          # Event trigger management
+│   ├── logging/
+│   │   └── logging.go           # Query logging & slow query detection
 │   ├── resolver/
 │   │   └── resolver.go          # GraphQL query resolution
 │   ├── schema/
 │   │   └── generator.go         # GraphQL schema generation
-│   └── subscription/
-│       └── manager.go           # Real-time subscriptions
+│   ├── subscription/
+│   │   └── manager.go           # Real-time subscriptions
+│   └── telemetry/
+│       └── telemetry.go         # OpenTelemetry integration
 ├── benchmarks/
 │   ├── benchmark_test.go        # Performance benchmarks
 │   └── comparison.md            # Hasura comparison
@@ -87,6 +92,12 @@ Provides real-time data using PostgreSQL LISTEN/NOTIFY.
 ### 7. Events (`internal/events/`)
 Manages event triggers with webhook delivery.
 
+### 8. Telemetry (`internal/telemetry/`)
+OpenTelemetry integration for distributed tracing and metrics. Supports OTLP export to Jaeger, Grafana Tempo, Datadog, and other collectors.
+
+### 9. Logging (`internal/logging/`)
+Structured logging with query logging and slow query detection. Provides optimization suggestions for database performance tuning.
+
 ## Technology Stack
 
 | Component | Technology | Purpose |
@@ -96,6 +107,7 @@ Manages event triggers with webhook delivery.
 | GraphQL | graphql-go | GraphQL implementation |
 | WebSocket | gorilla/websocket | Real-time subscriptions |
 | HTTP | net/http | API server |
+| Telemetry | OpenTelemetry | Distributed tracing & metrics |
 
 ## Key Features
 
@@ -103,14 +115,50 @@ Manages event triggers with webhook delivery.
 - **Real-time Subscriptions**: Live queries via WebSocket
 - **Authentication**: Admin secret, JWT, and webhook auth
 - **Event Triggers**: Webhook notifications on data changes
-- **Connection Pooling**: Efficient database connection management
+- **Connection Pooling**: Efficient database connection management (pgx)
 - **Schema Introspection**: Dynamic schema updates
 - **Hasura Compatible**: Drop-in replacement for many use cases
+- **OpenTelemetry**: Distributed tracing with Jaeger, Tempo, Datadog support
+- **Query Logging**: SQL query logging with slow query detection
+- **Database Optimization**: Automatic suggestions for indexes and partitioning
+
+## Observability
+
+### OpenTelemetry Integration
+
+```bash
+# Enable telemetry
+GRAPHPOST_TELEMETRY_ENABLED=true
+GRAPHPOST_OTLP_ENDPOINT=localhost:4317
+GRAPHPOST_TELEMETRY_SAMPLE_RATE=1.0
+```
+
+Supported backends:
+- Jaeger
+- Grafana Tempo
+- Datadog
+- Any OTLP-compatible collector
+
+### Query Logging
+
+```bash
+# Enable query logging for database optimization
+GRAPHPOST_LOG_QUERIES=true
+GRAPHPOST_SLOW_QUERY_THRESHOLD=500ms
+```
+
+Slow query logs include:
+- Query duration
+- SQL statement
+- Optimization suggestions (indexes, partitioning)
+- EXPLAIN ANALYZE hints
 
 ## Version History
 
 | Version | Changes |
 |---------|---------|
+| 1.2.0 | OpenTelemetry integration, query logging with slow query detection |
+| 1.1.0 | GraphQL operation enable/disable, pgx connection pool configuration |
 | 1.0.0 | Initial release with full GraphQL support |
 
 ## License

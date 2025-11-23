@@ -15,14 +15,36 @@ GraphPost can be configured through:
 // internal/config/config.go
 
 type Config struct {
-    Server   ServerConfig   `json:"server"`
-    Database DatabaseConfig `json:"database"`
-    Auth     AuthConfig     `json:"auth"`
-    Events   EventsConfig   `json:"events"`
-    Console  ConsoleConfig  `json:"console"`
-    Logging  LoggingConfig  `json:"logging"`
+    Server    ServerConfig    `json:"server"`
+    Database  DatabaseConfig  `json:"database"`
+    Auth      AuthConfig      `json:"auth"`
+    Console   ConsoleConfig   `json:"console"`
+    Events    EventsConfig    `json:"events"`
+    CORS      CORSConfig      `json:"cors"`
+    GraphQL   GraphQLConfig   `json:"graphql"`
+    Telemetry TelemetryConfig `json:"telemetry"`
+    Logging   LoggingConfig   `json:"logging"`
 }
 ```
+
+## Quick Start Environment Variables
+
+```bash
+# Essential configuration
+export GRAPHPOST_DATABASE_URL="postgres://user:pass@localhost:5432/mydb"
+export GRAPHPOST_ADMIN_SECRET="your-admin-secret"
+export GRAPHPOST_PORT=8080
+
+# Enable query logging for optimization
+export GRAPHPOST_LOG_QUERIES=true
+export GRAPHPOST_SLOW_QUERY_THRESHOLD=500ms
+
+# Enable OpenTelemetry
+export GRAPHPOST_TELEMETRY_ENABLED=true
+export GRAPHPOST_OTLP_ENDPOINT=localhost:4317
+```
+
+---
 
 ## Server Configuration
 
@@ -159,6 +181,86 @@ type AuthConfig struct {
 | `webhook_url` | `GRAPHPOST_AUTH_WEBHOOK_URL` | `` | Auth webhook URL |
 | `anonymous_role` | `GRAPHPOST_ANONYMOUS_ROLE` | `` | Role for unauthenticated requests |
 
+## GraphQL Configuration
+
+```go
+type GraphQLConfig struct {
+    EnableQueries       bool          `json:"enable_queries"`
+    EnableMutations     bool          `json:"enable_mutations"`
+    EnableSubscriptions bool          `json:"enable_subscriptions"`
+    EnableAggregations  bool          `json:"enable_aggregations"`
+    QueryDepthLimit     int           `json:"query_depth_limit"`
+    QueryTimeout        time.Duration `json:"query_timeout"`
+}
+```
+
+| Parameter | Environment Variable | Default | Description |
+|-----------|---------------------|---------|-------------|
+| `enable_queries` | `GRAPHPOST_ENABLE_QUERIES` | `true` | Allow SELECT operations |
+| `enable_mutations` | `GRAPHPOST_ENABLE_MUTATIONS` | `true` | Allow INSERT/UPDATE/DELETE |
+| `enable_subscriptions` | `GRAPHPOST_ENABLE_SUBSCRIPTIONS` | `true` | Allow real-time subscriptions |
+| `enable_aggregations` | `GRAPHPOST_ENABLE_AGGREGATIONS` | `true` | Allow aggregate queries |
+| `query_depth_limit` | `GRAPHPOST_QUERY_DEPTH_LIMIT` | `0` | Max query nesting depth (0 = unlimited) |
+| `query_timeout` | `GRAPHPOST_QUERY_TIMEOUT` | `0` | Query timeout via context (0 = no timeout) |
+
+### Read-Only Mode (GET Only)
+
+To run GraphPost in read-only mode for analytics/reporting:
+
+```bash
+# Disable all write operations
+GRAPHPOST_ENABLE_MUTATIONS=false
+
+# Optionally disable subscriptions
+GRAPHPOST_ENABLE_SUBSCRIPTIONS=false
+```
+
+### Query Security
+
+```bash
+# Limit query depth to prevent deep nested attacks
+GRAPHPOST_QUERY_DEPTH_LIMIT=10
+
+# Set query timeout to prevent long-running queries
+GRAPHPOST_QUERY_TIMEOUT=30s
+```
+
+---
+
+## CORS Configuration
+
+```go
+type CORSConfig struct {
+    Enabled          bool     `json:"enabled"`
+    AllowedOrigins   []string `json:"allowed_origins"`
+    AllowedMethods   []string `json:"allowed_methods"`
+    AllowedHeaders   []string `json:"allowed_headers"`
+    AllowCredentials bool     `json:"allow_credentials"`
+    MaxAge           int      `json:"max_age"`
+}
+```
+
+| Parameter | Environment Variable | Default | Description |
+|-----------|---------------------|---------|-------------|
+| `enabled` | `GRAPHPOST_CORS_ENABLED` | `true` | Enable CORS |
+| `allowed_origins` | `GRAPHPOST_CORS_ORIGINS` | `["*"]` | Allowed origins |
+| `allowed_methods` | `GRAPHPOST_CORS_METHODS` | `["GET","POST","OPTIONS"]` | Allowed HTTP methods |
+| `allowed_headers` | `GRAPHPOST_CORS_HEADERS` | `["Content-Type","Authorization","X-Admin-Secret"]` | Allowed headers |
+| `allow_credentials` | `GRAPHPOST_CORS_CREDENTIALS` | `true` | Allow credentials |
+| `max_age` | `GRAPHPOST_CORS_MAX_AGE` | `86400` | Preflight cache duration (seconds) |
+
+### Production CORS Settings
+
+```bash
+# Restrict to specific origins
+GRAPHPOST_CORS_ORIGINS="https://app.example.com,https://admin.example.com"
+
+# Disable credentials for public API
+GRAPHPOST_CORS_CREDENTIALS=false
+```
+
+---
+
 ## Events Configuration
 
 ```go
@@ -167,6 +269,7 @@ type EventsConfig struct {
     HTTPPoolSize        int           `json:"http_pool_size"`
     FetchInterval       time.Duration `json:"fetch_interval"`
     RetryLimit          int           `json:"retry_limit"`
+    RetryIntervals      []int         `json:"retry_intervals"`
     EnableManualTrigger bool          `json:"enable_manual_trigger"`
 }
 ```
@@ -176,8 +279,11 @@ type EventsConfig struct {
 | `enabled` | `GRAPHPOST_EVENTS_ENABLED` | `true` | Enable event triggers |
 | `http_pool_size` | `GRAPHPOST_EVENTS_HTTP_POOL` | `100` | Webhook HTTP worker pool |
 | `fetch_interval` | `GRAPHPOST_EVENTS_FETCH_INTERVAL` | `1s` | Event polling interval |
-| `retry_limit` | `GRAPHPOST_EVENTS_RETRY_LIMIT` | `5` | Max retry attempts |
-| `enable_manual_trigger` | `GRAPHPOST_EVENTS_MANUAL` | `false` | Allow manual trigger invocation |
+| `retry_limit` | `GRAPHPOST_EVENTS_RETRY_LIMIT` | `3` | Max retry attempts |
+| `retry_intervals` | - | `[10,30,60]` | Retry intervals in seconds |
+| `enable_manual_trigger` | `GRAPHPOST_EVENTS_MANUAL` | `true` | Allow manual trigger invocation |
+
+---
 
 ## Console Configuration
 
@@ -524,23 +630,96 @@ volumes:
 
 ## Production Recommendations
 
-1. **Security**
-   - Always set `GRAPHPOST_ADMIN_SECRET`
-   - Use `sslmode=require` for database
-   - Disable playground in production
-   - Set specific CORS origins
+### 1. Security
 
-2. **Performance**
-   - Tune `pool_min_conns` and `pool_max_conns`
-   - Set appropriate timeouts
-   - Enable connection pooling
+```bash
+# Always set admin secret
+GRAPHPOST_ADMIN_SECRET="strong-random-secret"
 
-3. **Monitoring**
-   - Enable request logging
-   - Use JSON log format for parsing
-   - Monitor pool statistics
+# Use SSL for database
+GRAPHPOST_DB_SSLMODE=require
 
-4. **High Availability**
-   - Use connection pooler (PgBouncer)
-   - Configure health check endpoints
-   - Set up load balancing
+# Disable playground in production
+GRAPHPOST_ENABLE_PLAYGROUND=false
+
+# Set specific CORS origins
+GRAPHPOST_CORS_ORIGINS="https://app.example.com"
+
+# Limit query depth
+GRAPHPOST_QUERY_DEPTH_LIMIT=10
+```
+
+### 2. Performance
+
+```bash
+# Tune connection pool
+GRAPHPOST_POOL_MIN_CONNS=10
+GRAPHPOST_POOL_MAX_CONNS=100
+GRAPHPOST_POOL_MAX_CONN_LIFETIME=30m
+
+# Set query timeout
+GRAPHPOST_QUERY_TIMEOUT=30s
+```
+
+### 3. Monitoring & Observability
+
+```bash
+# Enable OpenTelemetry
+GRAPHPOST_TELEMETRY_ENABLED=true
+GRAPHPOST_OTLP_ENDPOINT=otel-collector:4317
+GRAPHPOST_TELEMETRY_SAMPLE_RATE=0.1  # 10% sampling in production
+
+# Enable query logging for optimization
+GRAPHPOST_LOG_QUERIES=true
+GRAPHPOST_SLOW_QUERY_THRESHOLD=500ms
+GRAPHPOST_LOG_FORMAT=json
+```
+
+### 4. High Availability
+
+```bash
+# Use PgBouncer
+GRAPHPOST_POOL_SIMPLE_PROTOCOL=true
+
+# Health check configuration
+GRAPHPOST_POOL_HEALTH_CHECK_PERIOD=30s
+```
+
+---
+
+## Complete Environment Variable Reference
+
+| Category | Variable | Default | Description |
+|----------|----------|---------|-------------|
+| **Server** | `GRAPHPOST_HOST` | `0.0.0.0` | Bind address |
+| | `GRAPHPOST_PORT` | `8080` | Port |
+| | `GRAPHPOST_ENABLE_PLAYGROUND` | `true` | GraphQL Playground |
+| **Database** | `GRAPHPOST_DATABASE_URL` | - | Connection URL |
+| | `GRAPHPOST_DB_HOST` | `localhost` | Host |
+| | `GRAPHPOST_DB_PORT` | `5432` | Port |
+| | `GRAPHPOST_DB_USER` | `postgres` | User |
+| | `GRAPHPOST_DB_PASSWORD` | - | Password |
+| | `GRAPHPOST_DB_NAME` | `postgres` | Database |
+| | `GRAPHPOST_DB_SSLMODE` | `disable` | SSL mode |
+| **Pool** | `GRAPHPOST_POOL_MIN_CONNS` | `5` | Min connections |
+| | `GRAPHPOST_POOL_MAX_CONNS` | `50` | Max connections |
+| | `GRAPHPOST_POOL_MAX_CONN_LIFETIME` | `1h` | Connection lifetime |
+| | `GRAPHPOST_POOL_SIMPLE_PROTOCOL` | `false` | PgBouncer mode |
+| **Auth** | `GRAPHPOST_ADMIN_SECRET` | - | Admin secret |
+| | `GRAPHPOST_JWT_SECRET` | - | JWT secret |
+| | `GRAPHPOST_JWT_CLAIMS_NS` | `https://graphpost.io/jwt/claims` | Claims namespace |
+| **GraphQL** | `GRAPHPOST_ENABLE_QUERIES` | `true` | Enable queries |
+| | `GRAPHPOST_ENABLE_MUTATIONS` | `true` | Enable mutations |
+| | `GRAPHPOST_ENABLE_SUBSCRIPTIONS` | `true` | Enable subscriptions |
+| | `GRAPHPOST_QUERY_DEPTH_LIMIT` | `0` | Max depth |
+| | `GRAPHPOST_QUERY_TIMEOUT` | `0` | Query timeout |
+| **Telemetry** | `GRAPHPOST_TELEMETRY_ENABLED` | `false` | Enable OTEL |
+| | `GRAPHPOST_OTLP_ENDPOINT` | `localhost:4317` | Collector endpoint |
+| | `GRAPHPOST_OTLP_PROTOCOL` | `grpc` | Protocol |
+| | `GRAPHPOST_TELEMETRY_SAMPLE_RATE` | `1.0` | Sample rate |
+| | `GRAPHPOST_TELEMETRY_TRACE_QUERIES` | `true` | Trace queries |
+| **Logging** | `GRAPHPOST_LOG_LEVEL` | `info` | Log level |
+| | `GRAPHPOST_LOG_FORMAT` | `json` | Log format |
+| | `GRAPHPOST_LOG_QUERIES` | `false` | Query logging |
+| | `GRAPHPOST_SLOW_QUERY_THRESHOLD` | `1s` | Slow query threshold |
+| | `GRAPHPOST_LOG_QUERY_PARAMS` | `false` | Log parameters |

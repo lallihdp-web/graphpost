@@ -340,6 +340,133 @@ Server.handleGraphQL()
 └─────────────────────────────────────────────────────────┘
 ```
 
+## Observability Architecture
+
+### Telemetry (OpenTelemetry)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           GraphPost                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                    Telemetry Package                              │   │
+│  │  internal/telemetry/telemetry.go                                 │   │
+│  ├──────────────────────────────────────────────────────────────────┤   │
+│  │                                                                   │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │   │
+│  │  │ Tracer      │  │ Metrics     │  │ Span Propagation        │  │   │
+│  │  │ Provider    │  │ Provider    │  │ (W3C TraceContext)      │  │   │
+│  │  └──────┬──────┘  └──────┬──────┘  └─────────────────────────┘  │   │
+│  │         │                │                                       │   │
+│  │         └────────┬───────┘                                       │   │
+│  │                  │                                                │   │
+│  │         ┌────────▼────────┐                                      │   │
+│  │         │  OTLP Exporter  │                                      │   │
+│  │         │  (gRPC / HTTP)  │                                      │   │
+│  │         └────────┬────────┘                                      │   │
+│  └──────────────────┼───────────────────────────────────────────────┘   │
+│                     │                                                    │
+└─────────────────────┼────────────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   OpenTelemetry Collector                                │
+│           (Jaeger / Grafana Tempo / Datadog / etc.)                     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Trace Spans
+
+```
+HTTP Request (parent span)
+├── graphql.query (operation)
+│   ├── graphql.resolve (field: users)
+│   │   ├── db.query (SELECT * FROM users WHERE...)
+│   │   │   └── Attributes: db.system, db.operation, db.sql.table, duration_ms
+│   │   └── graphql.resolve (field: posts - nested)
+│   │       └── db.query (SELECT * FROM posts WHERE user_id IN...)
+│   └── graphql.resolve (field: count)
+│       └── db.query (SELECT COUNT(*) FROM...)
+└── Response sent
+```
+
+### Logging Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Logging Package                                       │
+│  internal/logging/logging.go                                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │                     Logger                                       │    │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌───────────────────────┐   │    │
+│  │  │ Level       │  │ Format      │  │ Output                 │   │    │
+│  │  │ Filter      │  │ (JSON/Text) │  │ (stdout/file)          │   │    │
+│  │  └─────────────┘  └─────────────┘  └───────────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │                 Query Logger                                     │    │
+│  │  ┌──────────────────┐  ┌────────────────────────────────────┐  │    │
+│  │  │ Query Logging    │  │ Slow Query Detection               │  │    │
+│  │  │ - SQL statement  │  │ - Threshold comparison             │  │    │
+│  │  │ - Duration       │  │ - Optimization suggestions         │  │    │
+│  │  │ - Parameters     │  │ - Index recommendations            │  │    │
+│  │  └──────────────────┘  └────────────────────────────────────┘  │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Query Log Flow
+
+```
+1. Query Received
+       │
+       ▼
+2. Start Timer
+       │
+       ▼
+3. Execute Query
+       │
+       ▼
+4. Stop Timer
+       │
+       ▼
+5. Duration > SlowQueryThreshold?
+       │
+       ├── YES → Log as WARN with optimization suggestions
+       │         - Check for missing indexes
+       │         - Suggest EXPLAIN ANALYZE
+       │         - Recommend partitioning
+       │
+       └── NO → Log as DEBUG (if QueryLog enabled)
+```
+
+### Sample Log Output
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:45.123Z",
+  "level": "warn",
+  "message": "Slow query detected",
+  "fields": {
+    "query": "SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC",
+    "duration": "1.234s",
+    "duration_ms": 1234,
+    "table": "orders",
+    "operation": "SELECT",
+    "slow_query": true,
+    "threshold": "500ms",
+    "suggestions": "ORDER BY without LIMIT may be slow; Check indexes on table 'orders'"
+  }
+}
+```
+
+---
+
 ## Extensibility Points
 
 1. **Custom Resolvers**: Add business logic before/after queries
@@ -347,3 +474,5 @@ Server.handleGraphQL()
 3. **Event Handlers**: React to database changes
 4. **Remote Schemas**: Stitch external GraphQL APIs
 5. **Actions**: Custom mutations with external handlers
+6. **Telemetry Hooks**: Custom spans and metrics via OpenTelemetry
+7. **Query Analyzers**: Custom slow query analysis and optimization hints
