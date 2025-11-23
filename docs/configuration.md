@@ -557,7 +557,11 @@ type RefreshConfig struct {
     SchedulerEnabled       bool          `json:"scheduler_enabled"`
     SchedulerInterval      time.Duration `json:"scheduler_interval"`
     CDCEnabled             bool          `json:"cdc_enabled"`
+    CDCMode                string        `json:"cdc_mode"`
     CDCPollInterval        time.Duration `json:"cdc_poll_interval"`
+    CDCCreateTriggers      bool          `json:"cdc_create_triggers"`
+    CDCIncludeRowData      bool          `json:"cdc_include_row_data"`
+    CDCReconnectDelay      time.Duration `json:"cdc_reconnect_delay"`
     LazyTTL                time.Duration `json:"lazy_ttl"`
     MaxConcurrentRefreshes int           `json:"max_concurrent_refreshes"`
     RefreshTimeout         time.Duration `json:"refresh_timeout"`
@@ -597,7 +601,11 @@ GraphPost supports four refresh strategies for materialized aggregates:
 | `refresh.scheduler_enabled` | `GRAPHPOST_ANALYTICS_SCHEDULER_ENABLED` | `true` | Enable scheduled refresh worker |
 | `refresh.scheduler_interval` | `GRAPHPOST_ANALYTICS_SCHEDULER_INTERVAL` | `30s` | How often to check for pending refreshes |
 | `refresh.cdc_enabled` | `GRAPHPOST_ANALYTICS_CDC_ENABLED` | `false` | Enable CDC-based refresh |
-| `refresh.cdc_poll_interval` | `GRAPHPOST_ANALYTICS_CDC_POLL_INTERVAL` | `5s` | CDC polling interval |
+| `refresh.cdc_mode` | `GRAPHPOST_ANALYTICS_CDC_MODE` | `polling` | CDC mode: `polling`, `realtime`, or `both` |
+| `refresh.cdc_poll_interval` | `GRAPHPOST_ANALYTICS_CDC_POLL_INTERVAL` | `5s` | CDC polling interval (polling mode) |
+| `refresh.cdc_create_triggers` | `GRAPHPOST_ANALYTICS_CDC_CREATE_TRIGGERS` | `false` | Auto-create triggers (realtime mode) |
+| `refresh.cdc_include_row_data` | `GRAPHPOST_ANALYTICS_CDC_INCLUDE_ROW_DATA` | `false` | Include row data in CDC events |
+| `refresh.cdc_reconnect_delay` | `GRAPHPOST_ANALYTICS_CDC_RECONNECT_DELAY` | `5s` | Reconnect delay on connection failure |
 | `refresh.lazy_ttl` | `GRAPHPOST_ANALYTICS_LAZY_TTL` | `5m` | TTL for lazy-refreshed aggregates |
 | `refresh.max_concurrent_refreshes` | `GRAPHPOST_ANALYTICS_MAX_CONCURRENT_REFRESHES` | `4` | Max parallel refresh operations |
 | `refresh.refresh_timeout` | `GRAPHPOST_ANALYTICS_REFRESH_TIMEOUT` | `5m` | Timeout for single refresh operation |
@@ -629,13 +637,56 @@ GRAPHPOST_ANALYTICS_SCHEDULER_ENABLED=true
 GRAPHPOST_ANALYTICS_SCHEDULER_INTERVAL=1m
 ```
 
-**Real-Time Analytics with CDC:**
+**Real-Time Analytics with CDC (Polling Mode):**
 ```bash
+# Polling mode: Lower PostgreSQL overhead, higher latency (~5s)
 GRAPHPOST_ANALYTICS_ENABLED=true
 GRAPHPOST_ANALYTICS_CDC_ENABLED=true
+GRAPHPOST_ANALYTICS_CDC_MODE=polling
 GRAPHPOST_ANALYTICS_CDC_POLL_INTERVAL=5s
 GRAPHPOST_ANALYTICS_PREFER_MATERIALIZED=true
 ```
+
+**Real-Time Analytics with CDC (Realtime Mode):**
+```bash
+# Realtime mode: Uses LISTEN/NOTIFY, sub-second latency
+GRAPHPOST_ANALYTICS_ENABLED=true
+GRAPHPOST_ANALYTICS_CDC_ENABLED=true
+GRAPHPOST_ANALYTICS_CDC_MODE=realtime
+GRAPHPOST_ANALYTICS_CDC_CREATE_TRIGGERS=true
+GRAPHPOST_ANALYTICS_PREFER_MATERIALIZED=true
+```
+
+**High-Availability CDC (Both Modes):**
+```bash
+# Both modes: Redundancy with realtime + polling fallback
+GRAPHPOST_ANALYTICS_ENABLED=true
+GRAPHPOST_ANALYTICS_CDC_ENABLED=true
+GRAPHPOST_ANALYTICS_CDC_MODE=both
+GRAPHPOST_ANALYTICS_CDC_CREATE_TRIGGERS=true
+GRAPHPOST_ANALYTICS_CDC_POLL_INTERVAL=30s
+```
+
+### CDC Mode Comparison
+
+| Mode | Latency | PostgreSQL Overhead | Requires Triggers | Use Case |
+|------|---------|---------------------|-------------------|----------|
+| `polling` | 5-30s | Lower (periodic stat queries) | No | General analytics |
+| `realtime` | <1s | Higher (trigger per write) | Yes | Real-time dashboards |
+| `both` | <1s | Higher | Yes | High-availability |
+
+**Polling Mode Details:**
+- Uses `pg_stat_user_tables` to detect changes
+- Detects INSERT/UPDATE/DELETE counts
+- No database modifications required
+- Suitable for most analytics workloads
+
+**Realtime Mode Details:**
+- Uses PostgreSQL LISTEN/NOTIFY mechanism
+- Creates triggers on monitored tables (when `cdc_create_triggers=true`)
+- Sub-second refresh latency
+- Requires dedicated connection for listening
+- Trigger format: `graphpost_cdc_<table>_trigger`
 
 **Lazy Analytics for Infrequent Queries:**
 ```bash
@@ -976,6 +1027,11 @@ GRAPHPOST_POOL_HEALTH_CHECK_PERIOD=30s
 | | `GRAPHPOST_DUCKDB_THREADS` | `0` | Query threads |
 | | `GRAPHPOST_ANALYTICS_SCHEDULER_ENABLED` | `true` | Enable scheduler |
 | | `GRAPHPOST_ANALYTICS_CDC_ENABLED` | `false` | Enable CDC refresh |
+| | `GRAPHPOST_ANALYTICS_CDC_MODE` | `polling` | CDC mode (polling/realtime/both) |
+| | `GRAPHPOST_ANALYTICS_CDC_POLL_INTERVAL` | `5s` | Polling interval |
+| | `GRAPHPOST_ANALYTICS_CDC_CREATE_TRIGGERS` | `false` | Auto-create triggers |
+| | `GRAPHPOST_ANALYTICS_CDC_INCLUDE_ROW_DATA` | `false` | Include row data |
+| | `GRAPHPOST_ANALYTICS_CDC_RECONNECT_DELAY` | `5s` | Reconnect delay |
 | | `GRAPHPOST_ANALYTICS_LAZY_TTL` | `5m` | Lazy refresh TTL |
 | | `GRAPHPOST_ANALYTICS_PREFER_MATERIALIZED` | `true` | Prefer materialized |
 | | `GRAPHPOST_ANALYTICS_FALLBACK_TO_LIVE` | `true` | Fallback to PostgreSQL |

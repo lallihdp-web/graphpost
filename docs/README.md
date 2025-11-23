@@ -191,7 +191,9 @@ GRAPHPOST_DUCKDB_MEMORY_LIMIT=2GB
 |----------|---------------------|-------------|
 | Scheduled | `GRAPHPOST_ANALYTICS_SCHEDULER_ENABLED=true` | Cron-based periodic refresh |
 | On-Demand | API call | Manual refresh via API |
-| CDC | `GRAPHPOST_ANALYTICS_CDC_ENABLED=true` | Real-time refresh on data changes |
+| CDC (Polling) | `GRAPHPOST_ANALYTICS_CDC_MODE=polling` | Polls pg_stat for changes (~5s latency) |
+| CDC (Realtime) | `GRAPHPOST_ANALYTICS_CDC_MODE=realtime` | LISTEN/NOTIFY triggers (<1s latency) |
+| CDC (Both) | `GRAPHPOST_ANALYTICS_CDC_MODE=both` | Redundant: realtime + polling fallback |
 | Lazy | `GRAPHPOST_ANALYTICS_LAZY_TTL=5m` | Compute on cache miss |
 
 ### Performance Benefits
@@ -208,6 +210,7 @@ GRAPHPOST_DUCKDB_MEMORY_LIMIT=2GB
 
 | Version | Changes |
 |---------|---------|
+| 1.3.1 | CDC mode selection: polling, realtime (LISTEN/NOTIFY), or both |
 | 1.3.0 | DuckDB analytics engine with materialized aggregates and configurable refresh strategies |
 | 1.2.1 | Multi-tier caching (in-memory LRU + Redis) |
 | 1.2.0 | OpenTelemetry integration, query logging with slow query detection |

@@ -24,7 +24,10 @@ type RefreshManager struct {
 	schedulerStop    chan struct{}
 	schedulerWg      sync.WaitGroup
 
-	// CDC listener state
+	// CDC listener state (new unified CDC listener)
+	cdcListener *CDCListener
+
+	// Legacy polling state (kept for backward compatibility when CDCMode is not set)
 	cdcRunning bool
 	cdcStop    chan struct{}
 	cdcWg      sync.WaitGroup
@@ -43,8 +46,23 @@ type RefreshConfig struct {
 	// CDCEnabled enables CDC-based refresh
 	CDCEnabled bool
 
-	// CDCPollInterval is how often to poll for CDC changes
+	// CDCMode is the CDC operation mode: "polling", "realtime", or "both"
+	// - polling: Uses pg_stat_user_tables to detect changes (lower PostgreSQL overhead, higher latency)
+	// - realtime: Uses LISTEN/NOTIFY with triggers (lower latency, requires trigger creation)
+	// - both: Uses both modes for redundancy
+	CDCMode CDCMode
+
+	// CDCPollInterval is how often to poll for CDC changes (for polling mode)
 	CDCPollInterval time.Duration
+
+	// CDCCreateTriggers automatically creates triggers for monitored tables (realtime mode)
+	CDCCreateTriggers bool
+
+	// CDCIncludeRowData includes row data in CDC events (realtime mode, increases payload size)
+	CDCIncludeRowData bool
+
+	// CDCReconnectDelay is the delay before reconnecting after a connection failure
+	CDCReconnectDelay time.Duration
 
 	// LazyTTL is the TTL for lazy-refreshed aggregates
 	LazyTTL time.Duration
@@ -66,6 +84,13 @@ func NewRefreshManager(store *MaterializedStore, duckdb *DuckDB, pgPool *pgxpool
 	}
 	if config.CDCPollInterval == 0 {
 		config.CDCPollInterval = 5 * time.Second
+	}
+	if config.CDCReconnectDelay == 0 {
+		config.CDCReconnectDelay = 5 * time.Second
+	}
+	// Default to polling mode for backward compatibility
+	if config.CDCMode == "" {
+		config.CDCMode = CDCModePolling
 	}
 	if config.LazyTTL == 0 {
 		config.LazyTTL = 5 * time.Minute
@@ -112,6 +137,13 @@ func (rm *RefreshManager) Stop() {
 		rm.schedulerRunning = false
 	}
 
+	// Stop new CDC listener
+	if rm.cdcListener != nil {
+		rm.cdcListener.Stop()
+		rm.cdcListener = nil
+	}
+
+	// Stop legacy CDC listener (for backward compatibility)
 	if rm.cdcRunning {
 		close(rm.cdcStop)
 		rm.cdcWg.Wait()
@@ -182,35 +214,45 @@ func (rm *RefreshManager) runScheduledRefreshes() {
 
 // startCDCListener starts the CDC-based refresh listener
 func (rm *RefreshManager) startCDCListener() {
-	if rm.cdcRunning {
+	if rm.cdcListener != nil {
 		return
 	}
 
-	rm.cdcStop = make(chan struct{})
-	rm.cdcRunning = true
+	// Create CDC listener with configured mode
+	rm.cdcListener = NewCDCListener(rm.pgPool, CDCListenerConfig{
+		Mode:           rm.config.CDCMode,
+		PollInterval:   rm.config.CDCPollInterval,
+		ReconnectDelay: rm.config.CDCReconnectDelay,
+		CreateTriggers: rm.config.CDCCreateTriggers,
+		IncludeRowData: rm.config.CDCIncludeRowData,
+		DatabaseURL:    rm.config.PostgresConnectionString,
+	})
 
-	// Register callback for CDC notifications
+	// Set callback for CDC events
+	rm.cdcListener.SetCallback(func(event *CDCEvent) {
+		rm.handleCDCEventNew(event)
+	})
+
+	// Register tables from existing CDC aggregates
+	aggregates := rm.store.ListAggregates()
+	for _, agg := range aggregates {
+		if agg.RefreshStrategy == RefreshCDC && agg.IsEnabled {
+			rm.cdcListener.AddTable(agg.SourceTable)
+		}
+	}
+
+	// Also register callback for legacy CDC notifications
 	rm.store.RegisterCDCCallback(func(tableName, operation string) {
 		rm.handleCDCEvent(tableName, operation)
 	})
 
-	rm.cdcWg.Add(1)
-	go func() {
-		defer rm.cdcWg.Done()
-		ticker := time.NewTicker(rm.config.CDCPollInterval)
-		defer ticker.Stop()
+	// Start the listener
+	if err := rm.cdcListener.Start(context.Background()); err != nil {
+		log.Printf("[Analytics] Failed to start CDC listener: %v", err)
+		return
+	}
 
-		for {
-			select {
-			case <-ticker.C:
-				rm.pollCDCChanges()
-			case <-rm.cdcStop:
-				return
-			}
-		}
-	}()
-
-	log.Printf("[Analytics] CDC listener started (poll interval: %v)", rm.config.CDCPollInterval)
+	log.Printf("[Analytics] CDC listener started (mode: %s)", rm.config.CDCMode)
 }
 
 // pollCDCChanges polls PostgreSQL for changes (using pg_stat_user_tables)
@@ -256,7 +298,7 @@ func (rm *RefreshManager) pollCDCChanges() {
 	}
 }
 
-// handleCDCEvent handles a CDC event notification
+// handleCDCEvent handles a CDC event notification (legacy callback)
 func (rm *RefreshManager) handleCDCEvent(tableName, operation string) {
 	aggregates := rm.store.GetAggregatesForTable(tableName)
 	for _, agg := range aggregates {
@@ -268,6 +310,26 @@ func (rm *RefreshManager) handleCDCEvent(tableName, operation string) {
 					log.Printf("[Analytics] CDC refresh failed for %s: %v", id, err)
 				}
 			}(agg.ID)
+		}
+	}
+}
+
+// handleCDCEventNew handles CDC events from the new unified CDC listener
+func (rm *RefreshManager) handleCDCEventNew(event *CDCEvent) {
+	aggregates := rm.store.GetAggregatesForTable(event.Table)
+	for _, agg := range aggregates {
+		if agg.RefreshStrategy == RefreshCDC && agg.IsEnabled {
+			go func(id, tableName, operation string) {
+				ctx, cancel := context.WithTimeout(context.Background(), rm.config.RefreshTimeout)
+				defer cancel()
+				if err := rm.RefreshAggregate(ctx, id); err != nil {
+					log.Printf("[Analytics] CDC refresh failed for %s (table: %s, op: %s): %v",
+						id, tableName, operation, err)
+				} else {
+					log.Printf("[Analytics] CDC refresh completed for %s (table: %s, op: %s)",
+						id, tableName, operation)
+				}
+			}(agg.ID, event.Table, event.Operation)
 		}
 	}
 }
@@ -648,16 +710,52 @@ func (rm *RefreshManager) Status() RefreshManagerStatus {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	return RefreshManagerStatus{
+	status := RefreshManagerStatus{
 		SchedulerRunning: rm.schedulerRunning,
-		CDCRunning:       rm.cdcRunning,
+		CDCRunning:       rm.cdcRunning || rm.cdcListener != nil,
 		Config:           rm.config,
 	}
+
+	// Include CDC listener status if available
+	if rm.cdcListener != nil {
+		cdcStatus := rm.cdcListener.Status()
+		status.CDCListenerStatus = &cdcStatus
+	}
+
+	return status
 }
 
 // RefreshManagerStatus represents the refresh manager status
 type RefreshManagerStatus struct {
-	SchedulerRunning bool
-	CDCRunning       bool
-	Config           RefreshConfig
+	SchedulerRunning  bool
+	CDCRunning        bool
+	CDCListenerStatus *CDCListenerStatus
+	Config            RefreshConfig
+}
+
+// AddCDCTable adds a table to the CDC listener for monitoring
+func (rm *RefreshManager) AddCDCTable(tableName string) error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	if rm.cdcListener == nil {
+		return fmt.Errorf("CDC listener not running")
+	}
+
+	return rm.cdcListener.AddTable(tableName)
+}
+
+// RemoveCDCTable removes a table from CDC monitoring
+func (rm *RefreshManager) RemoveCDCTable(tableName string) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	if rm.cdcListener != nil {
+		rm.cdcListener.RemoveTable(tableName)
+	}
+}
+
+// GetCDCMode returns the current CDC mode
+func (rm *RefreshManager) GetCDCMode() CDCMode {
+	return rm.config.CDCMode
 }

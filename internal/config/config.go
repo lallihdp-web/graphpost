@@ -297,8 +297,25 @@ type RefreshConfig struct {
 	// This monitors PostgreSQL for changes and triggers refreshes
 	CDCEnabled bool `json:"cdc_enabled"`
 
-	// CDCPollInterval is how often to poll PostgreSQL for changes
+	// CDCMode is the CDC operation mode: "polling", "realtime", or "both"
+	// - polling: Uses pg_stat_user_tables to detect changes (lower PostgreSQL overhead, higher latency)
+	// - realtime: Uses LISTEN/NOTIFY with triggers (lower latency, requires trigger creation)
+	// - both: Uses both modes for redundancy
+	CDCMode string `json:"cdc_mode"`
+
+	// CDCPollInterval is how often to poll PostgreSQL for changes (polling mode)
 	CDCPollInterval time.Duration `json:"cdc_poll_interval"`
+
+	// CDCCreateTriggers automatically creates CDC triggers on monitored tables (realtime mode)
+	// When true, triggers are created automatically when aggregates are defined
+	CDCCreateTriggers bool `json:"cdc_create_triggers"`
+
+	// CDCIncludeRowData includes row data in CDC events (realtime mode)
+	// When true, old/new row data is included in notifications (increases payload size)
+	CDCIncludeRowData bool `json:"cdc_include_row_data"`
+
+	// CDCReconnectDelay is the delay before reconnecting after a connection failure
+	CDCReconnectDelay time.Duration `json:"cdc_reconnect_delay"`
 
 	// LazyTTL is the time-to-live for lazy-refreshed aggregates
 	// After this duration, the next query triggers a recomputation
@@ -449,7 +466,11 @@ func DefaultConfig() *Config {
 				SchedulerEnabled:       true,
 				SchedulerInterval:      30 * time.Second,
 				CDCEnabled:             false,
+				CDCMode:                "polling",
 				CDCPollInterval:        5 * time.Second,
+				CDCCreateTriggers:      false,
+				CDCIncludeRowData:      false,
+				CDCReconnectDelay:      5 * time.Second,
 				LazyTTL:                5 * time.Minute,
 				MaxConcurrentRefreshes: 4,
 				RefreshTimeout:         5 * time.Minute,
@@ -723,6 +744,20 @@ func LoadFromEnv() *Config {
 	if cdcPollInterval := os.Getenv("GRAPHPOST_ANALYTICS_CDC_POLL_INTERVAL"); cdcPollInterval != "" {
 		if d, err := time.ParseDuration(cdcPollInterval); err == nil {
 			config.Analytics.Refresh.CDCPollInterval = d
+		}
+	}
+	if cdcMode := os.Getenv("GRAPHPOST_ANALYTICS_CDC_MODE"); cdcMode != "" {
+		config.Analytics.Refresh.CDCMode = cdcMode
+	}
+	if cdcCreateTriggers := os.Getenv("GRAPHPOST_ANALYTICS_CDC_CREATE_TRIGGERS"); cdcCreateTriggers == "true" {
+		config.Analytics.Refresh.CDCCreateTriggers = true
+	}
+	if cdcIncludeRowData := os.Getenv("GRAPHPOST_ANALYTICS_CDC_INCLUDE_ROW_DATA"); cdcIncludeRowData == "true" {
+		config.Analytics.Refresh.CDCIncludeRowData = true
+	}
+	if cdcReconnectDelay := os.Getenv("GRAPHPOST_ANALYTICS_CDC_RECONNECT_DELAY"); cdcReconnectDelay != "" {
+		if d, err := time.ParseDuration(cdcReconnectDelay); err == nil {
+			config.Analytics.Refresh.CDCReconnectDelay = d
 		}
 	}
 	if lazyTTL := os.Getenv("GRAPHPOST_ANALYTICS_LAZY_TTL"); lazyTTL != "" {
