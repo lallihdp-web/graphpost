@@ -160,6 +160,14 @@ type JWTConfig struct {
 
 	// Header specifies custom header to read JWT from (default: "Authorization")
 	Header *JWTHeader `json:"header,omitempty"`
+
+	// SkipVerification skips JWT signature verification (FOR DEVELOPMENT/TESTING ONLY)
+	// WARNING: Never enable this in production! Tokens will be trusted without validation.
+	SkipVerification bool `json:"skip_verification,omitempty"`
+
+	// SkipExpirationCheck skips JWT expiration validation (FOR DEVELOPMENT/TESTING ONLY)
+	// WARNING: Never enable this in production! Expired tokens will be accepted.
+	SkipExpirationCheck bool `json:"skip_expiration_check,omitempty"`
 }
 
 // ClaimMapping defines how to map a JWT claim to a session variable

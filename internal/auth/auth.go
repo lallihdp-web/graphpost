@@ -268,18 +268,24 @@ func (a *Authenticator) ValidateJWT(token string) (*Session, error) {
 		return nil, errors.New("invalid token payload")
 	}
 
+	// Check if verification should be skipped (DEVELOPMENT ONLY)
+	skipVerification := a.config.JWT != nil && a.config.JWT.SkipVerification
+	skipExpirationCheck := a.config.JWT != nil && a.config.JWT.SkipExpirationCheck
+
 	// Get key ID from header for JWKS lookup
 	kid, _ := header["kid"].(string)
 
-	// Verify signature
-	signInput := parts[0] + "." + parts[1]
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return nil, errors.New("invalid token signature")
-	}
+	// Verify signature (unless skipped for testing)
+	if !skipVerification {
+		signInput := parts[0] + "." + parts[1]
+		signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+		if err != nil {
+			return nil, errors.New("invalid token signature")
+		}
 
-	if err := a.verifySignature(alg, signInput, signature, kid); err != nil {
-		return nil, fmt.Errorf("signature verification failed: %w", err)
+		if err := a.verifySignature(alg, signInput, signature, kid); err != nil {
+			return nil, fmt.Errorf("signature verification failed: %w", err)
+		}
 	}
 
 	// Get allowed clock skew
@@ -288,19 +294,21 @@ func (a *Authenticator) ValidateJWT(token string) (*Session, error) {
 		allowedSkew = a.config.JWT.AllowedSkew
 	}
 
-	// Check expiration
-	if exp, ok := payload["exp"].(float64); ok {
-		expTime := time.Unix(int64(exp), 0).Add(time.Duration(allowedSkew) * time.Second)
-		if expTime.Before(time.Now()) {
-			return nil, errors.New("token expired")
+	// Check expiration (unless skipped for testing)
+	if !skipExpirationCheck {
+		if exp, ok := payload["exp"].(float64); ok {
+			expTime := time.Unix(int64(exp), 0).Add(time.Duration(allowedSkew) * time.Second)
+			if expTime.Before(time.Now()) {
+				return nil, errors.New("token expired")
+			}
 		}
-	}
 
-	// Check not before
-	if nbf, ok := payload["nbf"].(float64); ok {
-		nbfTime := time.Unix(int64(nbf), 0).Add(-time.Duration(allowedSkew) * time.Second)
-		if nbfTime.After(time.Now()) {
-			return nil, errors.New("token not yet valid")
+		// Check not before
+		if nbf, ok := payload["nbf"].(float64); ok {
+			nbfTime := time.Unix(int64(nbf), 0).Add(-time.Duration(allowedSkew) * time.Second)
+			if nbfTime.After(time.Now()) {
+				return nil, errors.New("token not yet valid")
+			}
 		}
 	}
 
