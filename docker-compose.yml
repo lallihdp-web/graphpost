@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: graphpost-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: graphpost_test
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  graphpost:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: graphpost-server
+    environment:
+      GRAPHPOST_DATABASE_URL: postgres://postgres:postgres@postgres:5432/graphpost_test?sslmode=disable
+      GRAPHPOST_HOST: 0.0.0.0
+      GRAPHPOST_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Graceful shutdown configuration
+    stop_grace_period: 45s
+
+volumes:
+  postgres_data:
