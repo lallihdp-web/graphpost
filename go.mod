@@ -6,6 +6,7 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/graphql-go/graphql v0.8.1
 	github.com/jackc/pgx/v5 v5.5.1
+	github.com/marcboeker/go-duckdb v1.5.6
 	github.com/redis/go-redis/v9 v9.3.0
 	go.opentelemetry.io/otel v1.21.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.21.0

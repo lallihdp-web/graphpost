@@ -467,6 +467,210 @@ HTTP Request (parent span)
 
 ---
 
+## Analytics Architecture (DuckDB)
+
+### Overview
+
+GraphPost includes an embedded DuckDB analytics engine for high-performance aggregate queries with materialized data.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Analytics Engine                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │                      Query Router                                     │     │
+│  │  ┌──────────────────┐   ┌───────────────────┐   ┌────────────────┐  │     │
+│  │  │ Aggregate        │   │ Live Query        │   │ DuckDB Query   │  │     │
+│  │  │ Request          │   │ Fallback          │   │ Execution      │  │     │
+│  │  └────────┬─────────┘   └─────────┬─────────┘   └────────┬───────┘  │     │
+│  │           │                       │                      │          │     │
+│  │           └───────────┬───────────┴──────────────────────┘          │     │
+│  └───────────────────────┼─────────────────────────────────────────────┘     │
+│                          │                                                    │
+│  ┌───────────────────────┼─────────────────────────────────────────────┐     │
+│  │                       ▼                                               │     │
+│  │             Materialized Store                                        │     │
+│  │  ┌─────────────────────────────────────────────────────────────┐    │     │
+│  │  │ Aggregate Definitions    │    Aggregate Values               │    │     │
+│  │  │ - Source table           │    - Group key                   │    │     │
+│  │  │ - Aggregate type         │    - Computed value              │    │     │
+│  │  │ - Group by columns       │    - Last computed at            │    │     │
+│  │  │ - Refresh strategy       │                                   │    │     │
+│  │  └─────────────────────────────────────────────────────────────┘    │     │
+│  └──────────────────────────────────────────────────────────────────────┘     │
+│                                                                               │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │                      Refresh Manager                                   │    │
+│  │                                                                        │    │
+│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────────────┐ │    │
+│  │  │ Scheduled  │ │ On-Demand  │ │ CDC-Based  │ │ Lazy (On Miss)     │ │    │
+│  │  │ (Cron)     │ │ (API)      │ │ (Realtime) │ │ (Compute & Cache)  │ │    │
+│  │  └─────┬──────┘ └─────┬──────┘ └─────┬──────┘ └─────────┬──────────┘ │    │
+│  │        │              │              │                   │           │    │
+│  │        └──────────────┴──────────────┴───────────────────┘           │    │
+│  │                               │                                       │    │
+│  │                    ┌──────────▼──────────┐                           │    │
+│  │                    │  PostgreSQL Query   │                           │    │
+│  │                    │  (Fetch Source)     │                           │    │
+│  │                    └──────────┬──────────┘                           │    │
+│  │                               │                                       │    │
+│  │                    ┌──────────▼──────────┐                           │    │
+│  │                    │  DuckDB Storage     │                           │    │
+│  │                    │  (Persist Result)   │                           │    │
+│  │                    └─────────────────────┘                           │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Refresh Strategy Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Refresh Strategy Selection                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     SCHEDULED                                         │    │
+│  │  ┌─────────┐    ┌──────────────┐    ┌──────────────┐    ┌────────┐  │    │
+│  │  │ Timer   │───▶│ Check Due    │───▶│ Query Source │───▶│ Store  │  │    │
+│  │  │ Tick    │    │ Aggregates   │    │ PostgreSQL   │    │ Result │  │    │
+│  │  └─────────┘    └──────────────┘    └──────────────┘    └────────┘  │    │
+│  │  Best for: Dashboards, regular reports                               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     ON-DEMAND                                         │    │
+│  │  ┌─────────┐    ┌──────────────┐    ┌──────────────┐    ┌────────┐  │    │
+│  │  │ API     │───▶│ Trigger      │───▶│ Query Source │───▶│ Store  │  │    │
+│  │  │ Request │    │ Refresh      │    │ PostgreSQL   │    │ Result │  │    │
+│  │  └─────────┘    └──────────────┘    └──────────────┘    └────────┘  │    │
+│  │  Best for: User-triggered reports, ad-hoc analytics                  │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     CDC (Change Data Capture)                         │    │
+│  │  ┌─────────┐    ┌──────────────┐    ┌──────────────┐    ┌────────┐  │    │
+│  │  │ Table   │───▶│ Detect       │───▶│ Query Source │───▶│ Store  │  │    │
+│  │  │ Change  │    │ Affected     │    │ PostgreSQL   │    │ Result │  │    │
+│  │  └─────────┘    └──────────────┘    └──────────────┘    └────────┘  │    │
+│  │  Best for: Near real-time analytics, operational dashboards          │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     LAZY                                              │    │
+│  │  ┌─────────┐    ┌──────────────┐    ┌──────────────┐    ┌────────┐  │    │
+│  │  │ Query   │───▶│ Check Cache  │───▶│ Miss? Query  │───▶│ Store  │  │    │
+│  │  │ Request │    │ Freshness    │    │ PostgreSQL   │    │ & Return │  │    │
+│  │  └─────────┘    └──────────────┘    └──────────────┘    └────────┘  │    │
+│  │  Best for: Infrequent queries, cost-sensitive workloads              │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Query Routing Decision Tree
+
+```
+                      Aggregate Query Request
+                              │
+                              ▼
+                ┌─────────────────────────────┐
+                │  Analytics Router Enabled?   │
+                └─────────────┬───────────────┘
+                              │
+              ┌───────────────┴───────────────┐
+              │                               │
+             YES                              NO
+              │                               │
+              ▼                               ▼
+    ┌─────────────────────┐         ┌─────────────────────┐
+    │ Find Matching       │         │ Execute Live        │
+    │ Aggregate Definition │         │ PostgreSQL Query    │
+    └──────────┬──────────┘         └─────────────────────┘
+               │
+    ┌──────────┴──────────┐
+    │                     │
+  Found              Not Found
+    │                     │
+    ▼                     ▼
+┌─────────────────┐  ┌──────────────────────┐
+│ Get Cached      │  │ Fallback Enabled?    │
+│ Value           │  └───────────┬──────────┘
+└────────┬────────┘              │
+         │              ┌────────┴────────┐
+   ┌─────┴─────┐       YES               NO
+   │           │        │                 │
+ Fresh      Stale       ▼                 ▼
+   │           │   ┌─────────────┐   ┌─────────┐
+   ▼           │   │ PostgreSQL  │   │ Error   │
+┌─────────┐    │   │ Live Query  │   │ Response│
+│ Return  │    │   └─────────────┘   └─────────┘
+│ Cached  │    ▼
+└─────────┘  ┌─────────────────────┐
+             │ Lazy Strategy?      │
+             └──────────┬──────────┘
+                        │
+             ┌──────────┴──────────┐
+            YES                    NO
+             │                     │
+             ▼                     ▼
+       ┌─────────────┐      ┌─────────────┐
+       │ Compute,    │      │ Fallback to │
+       │ Cache &     │      │ PostgreSQL  │
+       │ Return      │      │ Live Query  │
+       └─────────────┘      └─────────────┘
+```
+
+### DuckDB Storage Schema
+
+```sql
+-- Aggregate definitions table
+CREATE TABLE aggregate_definitions (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    source_table VARCHAR NOT NULL,
+    aggregate_type VARCHAR NOT NULL,
+    column_name VARCHAR,
+    group_by_columns VARCHAR,
+    filter_condition VARCHAR,
+    refresh_strategy VARCHAR NOT NULL,
+    refresh_interval_seconds INTEGER,
+    last_refreshed TIMESTAMP,
+    next_refresh TIMESTAMP,
+    is_enabled BOOLEAN DEFAULT TRUE
+);
+
+-- Materialized values storage
+CREATE TABLE aggregate_values (
+    aggregate_id VARCHAR NOT NULL,
+    group_key VARCHAR NOT NULL,
+    value DOUBLE,
+    count BIGINT,
+    sum DOUBLE,
+    min DOUBLE,
+    max DOUBLE,
+    avg DOUBLE,
+    computed_at TIMESTAMP,
+    PRIMARY KEY (aggregate_id, group_key)
+);
+
+-- Refresh audit log
+CREATE TABLE aggregate_refresh_log (
+    id INTEGER PRIMARY KEY,
+    aggregate_id VARCHAR NOT NULL,
+    started_at TIMESTAMP NOT NULL,
+    completed_at TIMESTAMP,
+    status VARCHAR NOT NULL,
+    rows_processed BIGINT,
+    duration_ms BIGINT,
+    error_message VARCHAR
+);
+```
+
+---
+
 ## Extensibility Points
 
 1. **Custom Resolvers**: Add business logic before/after queries
@@ -476,3 +680,4 @@ HTTP Request (parent span)
 5. **Actions**: Custom mutations with external handlers
 6. **Telemetry Hooks**: Custom spans and metrics via OpenTelemetry
 7. **Query Analyzers**: Custom slow query analysis and optimization hints
+8. **Analytics Aggregates**: Define custom materialized aggregates with configurable refresh strategies

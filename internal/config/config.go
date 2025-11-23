@@ -18,6 +18,7 @@ type Config struct {
 	Telemetry TelemetryConfig `json:"telemetry"`
 	Logging   LoggingConfig   `json:"logging"`
 	Cache     CacheConfig     `json:"cache"`
+	Analytics AnalyticsConfig `json:"analytics"`
 }
 
 // ServerConfig holds server-related configuration
@@ -253,6 +254,79 @@ type CacheConfig struct {
 	RedisDB       int    `json:"redis_db"`
 }
 
+// AnalyticsConfig holds DuckDB analytics configuration
+type AnalyticsConfig struct {
+	// Enabled enables the analytics engine
+	Enabled bool `json:"enabled"`
+
+	// DuckDB configuration
+	DuckDB DuckDBConfig `json:"duckdb"`
+
+	// Refresh configuration
+	Refresh RefreshConfig `json:"refresh"`
+
+	// Router configuration
+	Router RouterConfig `json:"router"`
+}
+
+// DuckDBConfig holds DuckDB-specific configuration
+type DuckDBConfig struct {
+	// Path is the database file path (empty for in-memory)
+	// Use ":memory:" for pure in-memory operation
+	Path string `json:"path"`
+
+	// MemoryLimit is the maximum memory DuckDB can use (e.g., "4GB", "512MB")
+	MemoryLimit string `json:"memory_limit"`
+
+	// Threads is the number of threads for query execution (0 = auto)
+	Threads int `json:"threads"`
+
+	// TempDirectory for spilling large operations to disk
+	TempDirectory string `json:"temp_directory"`
+}
+
+// RefreshConfig holds aggregate refresh configuration
+type RefreshConfig struct {
+	// SchedulerEnabled enables the scheduled refresh background worker
+	SchedulerEnabled bool `json:"scheduler_enabled"`
+
+	// SchedulerInterval is how often to check for pending scheduled refreshes
+	SchedulerInterval time.Duration `json:"scheduler_interval"`
+
+	// CDCEnabled enables CDC-based (Change Data Capture) refresh
+	// This monitors PostgreSQL for changes and triggers refreshes
+	CDCEnabled bool `json:"cdc_enabled"`
+
+	// CDCPollInterval is how often to poll PostgreSQL for changes
+	CDCPollInterval time.Duration `json:"cdc_poll_interval"`
+
+	// LazyTTL is the time-to-live for lazy-refreshed aggregates
+	// After this duration, the next query triggers a recomputation
+	LazyTTL time.Duration `json:"lazy_ttl"`
+
+	// MaxConcurrentRefreshes limits parallel refresh operations
+	MaxConcurrentRefreshes int `json:"max_concurrent_refreshes"`
+
+	// RefreshTimeout is the maximum time for a single refresh operation
+	RefreshTimeout time.Duration `json:"refresh_timeout"`
+}
+
+// RouterConfig holds query routing configuration
+type RouterConfig struct {
+	// Enabled enables analytics query routing
+	Enabled bool `json:"enabled"`
+
+	// PreferMaterialized prefers materialized data over live PostgreSQL queries
+	PreferMaterialized bool `json:"prefer_materialized"`
+
+	// FallbackToLive allows falling back to PostgreSQL if materialized data is unavailable
+	FallbackToLive bool `json:"fallback_to_live"`
+
+	// StalenessThreshold defines when materialized data is considered stale
+	// Queries for stale data will trigger refresh or fallback
+	StalenessThreshold time.Duration `json:"staleness_threshold"`
+}
+
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
@@ -362,6 +436,30 @@ func DefaultConfig() *Config {
 			RedisPort:          6379,
 			RedisPassword:      "",
 			RedisDB:            0,
+		},
+		Analytics: AnalyticsConfig{
+			Enabled: false,
+			DuckDB: DuckDBConfig{
+				Path:          ":memory:",
+				MemoryLimit:   "2GB",
+				Threads:       0, // Auto
+				TempDirectory: "",
+			},
+			Refresh: RefreshConfig{
+				SchedulerEnabled:       true,
+				SchedulerInterval:      30 * time.Second,
+				CDCEnabled:             false,
+				CDCPollInterval:        5 * time.Second,
+				LazyTTL:                5 * time.Minute,
+				MaxConcurrentRefreshes: 4,
+				RefreshTimeout:         5 * time.Minute,
+			},
+			Router: RouterConfig{
+				Enabled:            true,
+				PreferMaterialized: true,
+				FallbackToLive:     true,
+				StalenessThreshold: 5 * time.Minute,
+			},
 		},
 	}
 }
@@ -587,6 +685,76 @@ func LoadFromEnv() *Config {
 		var v int
 		if err := json.Unmarshal([]byte(redisDB), &v); err == nil {
 			config.Cache.RedisDB = v
+		}
+	}
+
+	// Analytics configuration
+	if analyticsEnabled := os.Getenv("GRAPHPOST_ANALYTICS_ENABLED"); analyticsEnabled == "true" {
+		config.Analytics.Enabled = true
+	}
+	if duckdbPath := os.Getenv("GRAPHPOST_DUCKDB_PATH"); duckdbPath != "" {
+		config.Analytics.DuckDB.Path = duckdbPath
+	}
+	if duckdbMemory := os.Getenv("GRAPHPOST_DUCKDB_MEMORY_LIMIT"); duckdbMemory != "" {
+		config.Analytics.DuckDB.MemoryLimit = duckdbMemory
+	}
+	if duckdbThreads := os.Getenv("GRAPHPOST_DUCKDB_THREADS"); duckdbThreads != "" {
+		var v int
+		if err := json.Unmarshal([]byte(duckdbThreads), &v); err == nil {
+			config.Analytics.DuckDB.Threads = v
+		}
+	}
+	if duckdbTempDir := os.Getenv("GRAPHPOST_DUCKDB_TEMP_DIR"); duckdbTempDir != "" {
+		config.Analytics.DuckDB.TempDirectory = duckdbTempDir
+	}
+
+	// Analytics refresh configuration
+	if schedulerEnabled := os.Getenv("GRAPHPOST_ANALYTICS_SCHEDULER_ENABLED"); schedulerEnabled == "false" {
+		config.Analytics.Refresh.SchedulerEnabled = false
+	}
+	if schedulerInterval := os.Getenv("GRAPHPOST_ANALYTICS_SCHEDULER_INTERVAL"); schedulerInterval != "" {
+		if d, err := time.ParseDuration(schedulerInterval); err == nil {
+			config.Analytics.Refresh.SchedulerInterval = d
+		}
+	}
+	if cdcEnabled := os.Getenv("GRAPHPOST_ANALYTICS_CDC_ENABLED"); cdcEnabled == "true" {
+		config.Analytics.Refresh.CDCEnabled = true
+	}
+	if cdcPollInterval := os.Getenv("GRAPHPOST_ANALYTICS_CDC_POLL_INTERVAL"); cdcPollInterval != "" {
+		if d, err := time.ParseDuration(cdcPollInterval); err == nil {
+			config.Analytics.Refresh.CDCPollInterval = d
+		}
+	}
+	if lazyTTL := os.Getenv("GRAPHPOST_ANALYTICS_LAZY_TTL"); lazyTTL != "" {
+		if d, err := time.ParseDuration(lazyTTL); err == nil {
+			config.Analytics.Refresh.LazyTTL = d
+		}
+	}
+	if maxConcurrent := os.Getenv("GRAPHPOST_ANALYTICS_MAX_CONCURRENT_REFRESHES"); maxConcurrent != "" {
+		var v int
+		if err := json.Unmarshal([]byte(maxConcurrent), &v); err == nil {
+			config.Analytics.Refresh.MaxConcurrentRefreshes = v
+		}
+	}
+	if refreshTimeout := os.Getenv("GRAPHPOST_ANALYTICS_REFRESH_TIMEOUT"); refreshTimeout != "" {
+		if d, err := time.ParseDuration(refreshTimeout); err == nil {
+			config.Analytics.Refresh.RefreshTimeout = d
+		}
+	}
+
+	// Analytics router configuration
+	if routerEnabled := os.Getenv("GRAPHPOST_ANALYTICS_ROUTER_ENABLED"); routerEnabled == "false" {
+		config.Analytics.Router.Enabled = false
+	}
+	if preferMaterialized := os.Getenv("GRAPHPOST_ANALYTICS_PREFER_MATERIALIZED"); preferMaterialized == "false" {
+		config.Analytics.Router.PreferMaterialized = false
+	}
+	if fallbackToLive := os.Getenv("GRAPHPOST_ANALYTICS_FALLBACK_TO_LIVE"); fallbackToLive == "false" {
+		config.Analytics.Router.FallbackToLive = false
+	}
+	if stalenessThreshold := os.Getenv("GRAPHPOST_ANALYTICS_STALENESS_THRESHOLD"); stalenessThreshold != "" {
+		if d, err := time.ParseDuration(stalenessThreshold); err == nil {
+			config.Analytics.Router.StalenessThreshold = d
 		}
 	}
 
