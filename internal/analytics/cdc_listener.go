@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -266,7 +266,7 @@ func (l *CDCListener) connectAndListen() error {
 }
 
 // handleNotification processes a PostgreSQL notification
-func (l *CDCListener) handleNotification(notification *pgx.Notification) {
+func (l *CDCListener) handleNotification(notification *pgconn.Notification) {
 	if notification.Channel != CDCNotificationChannel {
 		return
 	}

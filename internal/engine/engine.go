@@ -105,9 +105,7 @@ func (e *Engine) Stop(ctx context.Context) error {
 
 	// Stop subscription manager first (stops accepting new subscriptions)
 	if e.subManager != nil {
-		if err := e.subManager.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("subscription manager: %w", err))
-		}
+		e.subManager.Stop(ctx)
 	}
 
 	// Stop event trigger manager
