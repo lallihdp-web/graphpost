@@ -1016,36 +1016,55 @@ func (g *Generator) generateSubscriptionFields() graphql.Fields {
 func (g *Generator) getAggregateType(tableName string) *graphql.Object {
 	name := toPascalCase(tableName) + "_aggregate"
 
-	// Aggregate fields type
+	// Check cache first
+	if existing, ok := g.types[name]; ok {
+		return existing
+	}
+
+	// Create aggregate field types (cached)
 	aggFieldsName := toPascalCase(tableName) + "_aggregate_fields"
-	aggFields := graphql.NewObject(graphql.ObjectConfig{
-		Name: aggFieldsName,
-		Fields: graphql.Fields{
-			"count": {
-				Type: graphql.Int,
-				Args: graphql.FieldConfigArgument{
-					"columns": {
-						Type: graphql.NewList(graphql.String),
-					},
-					"distinct": {
-						Type: graphql.Boolean,
+	var aggFields *graphql.Object
+	if existing, ok := g.types[aggFieldsName]; ok {
+		aggFields = existing
+	} else {
+		// Get cached sub-types
+		minType := g.getMinMaxType(tableName, "min")
+		maxType := g.getMinMaxType(tableName, "max")
+		sumType := g.getSumType(tableName)
+		avgType := g.getAvgType(tableName)
+		stddevType := g.getStddevType(tableName)
+		varianceType := g.getVarianceType(tableName)
+
+		aggFields = graphql.NewObject(graphql.ObjectConfig{
+			Name: aggFieldsName,
+			Fields: graphql.Fields{
+				"count": {
+					Type: graphql.Int,
+					Args: graphql.FieldConfigArgument{
+						"columns": {
+							Type: graphql.NewList(graphql.String),
+						},
+						"distinct": {
+							Type: graphql.Boolean,
+						},
 					},
 				},
+				"max":         {Type: maxType},
+				"min":         {Type: minType},
+				"sum":         {Type: sumType},
+				"avg":         {Type: avgType},
+				"stddev":      {Type: stddevType},
+				"stddev_pop":  {Type: stddevType},
+				"stddev_samp": {Type: stddevType},
+				"var_pop":     {Type: varianceType},
+				"var_samp":    {Type: varianceType},
+				"variance":    {Type: varianceType},
 			},
-			"max": {Type: g.getMinMaxType(tableName, "max")},
-			"min": {Type: g.getMinMaxType(tableName, "min")},
-			"sum": {Type: g.getSumType(tableName)},
-			"avg": {Type: g.getAvgType(tableName)},
-			"stddev": {Type: g.getStddevType(tableName)},
-			"stddev_pop": {Type: g.getStddevType(tableName)},
-			"stddev_samp": {Type: g.getStddevType(tableName)},
-			"var_pop": {Type: g.getVarianceType(tableName)},
-			"var_samp": {Type: g.getVarianceType(tableName)},
-			"variance": {Type: g.getVarianceType(tableName)},
-		},
-	})
+		})
+		g.types[aggFieldsName] = aggFields
+	}
 
-	return graphql.NewObject(graphql.ObjectConfig{
+	aggType := graphql.NewObject(graphql.ObjectConfig{
 		Name: name,
 		Fields: graphql.Fields{
 			"aggregate": {
@@ -1056,13 +1075,20 @@ func (g *Generator) getAggregateType(tableName string) *graphql.Object {
 			},
 		},
 	})
+	g.types[name] = aggType
+	return aggType
 }
 
 // getMinMaxType returns the min/max type for a table
 func (g *Generator) getMinMaxType(tableName, prefix string) *graphql.Object {
 	name := toPascalCase(tableName) + "_" + prefix + "_fields"
-	fields := graphql.Fields{}
 
+	// Check cache first
+	if existing, ok := g.types[name]; ok {
+		return existing
+	}
+
+	fields := graphql.Fields{}
 	if table, ok := g.dbSchema.Tables[tableName]; ok {
 		for _, col := range table.Columns {
 			if g.isComparableType(col.SQLType) {
@@ -1073,17 +1099,24 @@ func (g *Generator) getMinMaxType(tableName, prefix string) *graphql.Object {
 		}
 	}
 
-	return graphql.NewObject(graphql.ObjectConfig{
+	result := graphql.NewObject(graphql.ObjectConfig{
 		Name:   name,
 		Fields: fields,
 	})
+	g.types[name] = result
+	return result
 }
 
 // getSumType returns the sum type for a table
 func (g *Generator) getSumType(tableName string) *graphql.Object {
 	name := toPascalCase(tableName) + "_sum_fields"
-	fields := graphql.Fields{}
 
+	// Check cache first
+	if existing, ok := g.types[name]; ok {
+		return existing
+	}
+
+	fields := graphql.Fields{}
 	if table, ok := g.dbSchema.Tables[tableName]; ok {
 		for _, col := range table.Columns {
 			if g.isNumericType(col.SQLType) {
@@ -1094,17 +1127,24 @@ func (g *Generator) getSumType(tableName string) *graphql.Object {
 		}
 	}
 
-	return graphql.NewObject(graphql.ObjectConfig{
+	result := graphql.NewObject(graphql.ObjectConfig{
 		Name:   name,
 		Fields: fields,
 	})
+	g.types[name] = result
+	return result
 }
 
 // getAvgType returns the avg type for a table
 func (g *Generator) getAvgType(tableName string) *graphql.Object {
 	name := toPascalCase(tableName) + "_avg_fields"
-	fields := graphql.Fields{}
 
+	// Check cache first
+	if existing, ok := g.types[name]; ok {
+		return existing
+	}
+
+	fields := graphql.Fields{}
 	if table, ok := g.dbSchema.Tables[tableName]; ok {
 		for _, col := range table.Columns {
 			if g.isNumericType(col.SQLType) {
@@ -1115,17 +1155,24 @@ func (g *Generator) getAvgType(tableName string) *graphql.Object {
 		}
 	}
 
-	return graphql.NewObject(graphql.ObjectConfig{
+	result := graphql.NewObject(graphql.ObjectConfig{
 		Name:   name,
 		Fields: fields,
 	})
+	g.types[name] = result
+	return result
 }
 
 // getStddevType returns the stddev type for a table
 func (g *Generator) getStddevType(tableName string) *graphql.Object {
 	name := toPascalCase(tableName) + "_stddev_fields"
-	fields := graphql.Fields{}
 
+	// Check cache first
+	if existing, ok := g.types[name]; ok {
+		return existing
+	}
+
+	fields := graphql.Fields{}
 	if table, ok := g.dbSchema.Tables[tableName]; ok {
 		for _, col := range table.Columns {
 			if g.isNumericType(col.SQLType) {
@@ -1136,17 +1183,24 @@ func (g *Generator) getStddevType(tableName string) *graphql.Object {
 		}
 	}
 
-	return graphql.NewObject(graphql.ObjectConfig{
+	result := graphql.NewObject(graphql.ObjectConfig{
 		Name:   name,
 		Fields: fields,
 	})
+	g.types[name] = result
+	return result
 }
 
 // getVarianceType returns the variance type for a table
 func (g *Generator) getVarianceType(tableName string) *graphql.Object {
 	name := toPascalCase(tableName) + "_variance_fields"
-	fields := graphql.Fields{}
 
+	// Check cache first
+	if existing, ok := g.types[name]; ok {
+		return existing
+	}
+
+	fields := graphql.Fields{}
 	if table, ok := g.dbSchema.Tables[tableName]; ok {
 		for _, col := range table.Columns {
 			if g.isNumericType(col.SQLType) {
@@ -1157,17 +1211,24 @@ func (g *Generator) getVarianceType(tableName string) *graphql.Object {
 		}
 	}
 
-	return graphql.NewObject(graphql.ObjectConfig{
+	result := graphql.NewObject(graphql.ObjectConfig{
 		Name:   name,
 		Fields: fields,
 	})
+	g.types[name] = result
+	return result
 }
 
 // getMutationResponseType returns the mutation response type for a table
 func (g *Generator) getMutationResponseType(tableName string) *graphql.Object {
 	name := toPascalCase(tableName) + "_mutation_response"
 
-	return graphql.NewObject(graphql.ObjectConfig{
+	// Check cache first
+	if existing, ok := g.types[name]; ok {
+		return existing
+	}
+
+	result := graphql.NewObject(graphql.ObjectConfig{
 		Name: name,
 		Fields: graphql.Fields{
 			"affected_rows": {
@@ -1180,13 +1241,20 @@ func (g *Generator) getMutationResponseType(tableName string) *graphql.Object {
 			},
 		},
 	})
+	g.types[name] = result
+	return result
 }
 
 // getOnConflictInputType returns the on_conflict input type for a table
 func (g *Generator) getOnConflictInputType(tableName string) *graphql.InputObject {
 	name := toPascalCase(tableName) + "_on_conflict"
 
-	return graphql.NewInputObject(graphql.InputObjectConfig{
+	// Check cache first
+	if existing, ok := g.inputTypes[name]; ok {
+		return existing
+	}
+
+	result := graphql.NewInputObject(graphql.InputObjectConfig{
 		Name: name,
 		Fields: graphql.InputObjectConfigFieldMap{
 			"constraint": {
@@ -1203,13 +1271,20 @@ func (g *Generator) getOnConflictInputType(tableName string) *graphql.InputObjec
 			},
 		},
 	})
+	g.inputTypes[name] = result
+	return result
 }
 
 // getStreamCursorInputType returns the stream cursor input type for a table
 func (g *Generator) getStreamCursorInputType(tableName string) *graphql.InputObject {
 	name := toPascalCase(tableName) + "_stream_cursor_input"
 
-	return graphql.NewInputObject(graphql.InputObjectConfig{
+	// Check cache first
+	if existing, ok := g.inputTypes[name]; ok {
+		return existing
+	}
+
+	result := graphql.NewInputObject(graphql.InputObjectConfig{
 		Name: name,
 		Fields: graphql.InputObjectConfigFieldMap{
 			"initial_value": {
@@ -1222,11 +1297,19 @@ func (g *Generator) getStreamCursorInputType(tableName string) *graphql.InputObj
 			},
 		},
 	})
+	g.inputTypes[name] = result
+	return result
 }
 
 // getStreamCursorValueInputType returns the stream cursor value input type for a table
 func (g *Generator) getStreamCursorValueInputType(tableName string) *graphql.InputObject {
 	name := toPascalCase(tableName) + "_stream_cursor_value_input"
+
+	// Check cache first
+	if existing, ok := g.inputTypes[name]; ok {
+		return existing
+	}
+
 	fields := graphql.InputObjectConfigFieldMap{}
 
 	if table, ok := g.dbSchema.Tables[tableName]; ok {
@@ -1240,10 +1323,12 @@ func (g *Generator) getStreamCursorValueInputType(tableName string) *graphql.Inp
 		}
 	}
 
-	return graphql.NewInputObject(graphql.InputObjectConfig{
+	result := graphql.NewInputObject(graphql.InputObjectConfig{
 		Name:   name,
 		Fields: fields,
 	})
+	g.inputTypes[name] = result
+	return result
 }
 
 // isNumericType checks if a SQL type is numeric

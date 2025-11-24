@@ -6,7 +6,6 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
-	"strings"
 )
 
 //go:embed static/*

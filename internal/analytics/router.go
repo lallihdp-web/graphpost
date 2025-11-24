@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // QueryRouter routes queries between PostgreSQL and DuckDB analytics
@@ -440,5 +442,5 @@ func (e *AnalyticsEngine) Stop() {
 	e.DuckDB.Close()
 }
 
-// Import pgxpool for type assertion
-import "github.com/jackc/pgx/v5/pgxpool"
+// _ is used to ensure pgxpool is imported for type assertion
+var _ *pgxpool.Pool

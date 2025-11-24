@@ -547,7 +547,6 @@ func (a *Authenticator) jwkToPublicKey(jwk JWK) (interface{}, error) {
 		y := new(big.Int).SetBytes(yBytes)
 
 		// Get curve based on crv
-		var curve interface{ Params() *struct{ BitSize int } }
 		switch jwk.Crv {
 		case "P-256":
 			return &ecdsa.PublicKey{X: x, Y: y}, nil
@@ -558,7 +557,6 @@ func (a *Authenticator) jwkToPublicKey(jwk JWK) (interface{}, error) {
 		default:
 			return nil, fmt.Errorf("unsupported curve: %s", jwk.Crv)
 		}
-		_ = curve // Unused, handled above
 
 	default:
 		return nil, fmt.Errorf("unsupported key type: %s", jwk.Kty)

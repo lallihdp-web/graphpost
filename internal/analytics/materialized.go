@@ -3,6 +3,7 @@ package analytics
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -173,9 +174,6 @@ func (s *MaterializedStore) loadDefinitions(ctx context.Context) error {
 
 	return rows.Err()
 }
-
-// sql.NullString and sql.NullTime are from database/sql
-import "database/sql"
 
 // CreateAggregate creates a new materialized aggregate definition
 func (s *MaterializedStore) CreateAggregate(ctx context.Context, def *AggregateDefinition) error {
