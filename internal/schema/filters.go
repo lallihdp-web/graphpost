@@ -222,44 +222,41 @@ func (fg *FilterGenerator) generateBoolExp(tableName string) *graphql.InputObjec
 		return nil
 	}
 
-	// Create placeholder to handle circular references
-	boolExp := graphql.NewInputObject(graphql.InputObjectConfig{
-		Name:   name,
-		Fields: graphql.InputObjectConfigFieldMap{},
+	// Use a thunk to handle circular references
+	var boolExp *graphql.InputObject
+	boolExp = graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: name,
+		Fields: (graphql.InputObjectConfigFieldMapThunk)(func() graphql.InputObjectConfigFieldMap {
+			fields := graphql.InputObjectConfigFieldMap{
+				"_and": {
+					Type:        graphql.NewList(boolExp),
+					Description: "Logical AND",
+				},
+				"_or": {
+					Type:        graphql.NewList(boolExp),
+					Description: "Logical OR",
+				},
+				"_not": {
+					Type:        boolExp,
+					Description: "Logical NOT",
+				},
+			}
+
+			// Add column filters
+			for _, col := range table.Columns {
+				comparisonType := fg.getComparisonType(col)
+				if comparisonType != nil {
+					fields[col.Name] = &graphql.InputObjectFieldConfig{
+						Type:        comparisonType,
+						Description: "Filter by " + col.Name,
+					}
+				}
+			}
+
+			return fields
+		}),
 	})
 	fg.filterTypes[name] = boolExp
-
-	// Build fields
-	fields := graphql.InputObjectConfigFieldMap{
-		"_and": {
-			Type:        graphql.NewList(boolExp),
-			Description: "Logical AND",
-		},
-		"_or": {
-			Type:        graphql.NewList(boolExp),
-			Description: "Logical OR",
-		},
-		"_not": {
-			Type:        boolExp,
-			Description: "Logical NOT",
-		},
-	}
-
-	// Add column filters
-	for _, col := range table.Columns {
-		comparisonType := fg.getComparisonType(col)
-		if comparisonType != nil {
-			fields[col.Name] = &graphql.InputObjectFieldConfig{
-				Type:        comparisonType,
-				Description: "Filter by " + col.Name,
-			}
-		}
-	}
-
-	// Update the bool_exp with fields
-	for fieldName, fieldConfig := range fields {
-		boolExp.AddFieldConfig(fieldName, fieldConfig)
-	}
 
 	return boolExp
 }
@@ -277,44 +274,41 @@ func (fg *FilterGenerator) generateBoolExpForView(viewName string) *graphql.Inpu
 		return nil
 	}
 
-	// Create placeholder
-	boolExp := graphql.NewInputObject(graphql.InputObjectConfig{
-		Name:   name,
-		Fields: graphql.InputObjectConfigFieldMap{},
+	// Use a thunk to handle circular references
+	var boolExp *graphql.InputObject
+	boolExp = graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: name,
+		Fields: (graphql.InputObjectConfigFieldMapThunk)(func() graphql.InputObjectConfigFieldMap {
+			fields := graphql.InputObjectConfigFieldMap{
+				"_and": {
+					Type:        graphql.NewList(boolExp),
+					Description: "Logical AND",
+				},
+				"_or": {
+					Type:        graphql.NewList(boolExp),
+					Description: "Logical OR",
+				},
+				"_not": {
+					Type:        boolExp,
+					Description: "Logical NOT",
+				},
+			}
+
+			// Add column filters
+			for _, col := range view.Columns {
+				comparisonType := fg.getComparisonType(col)
+				if comparisonType != nil {
+					fields[col.Name] = &graphql.InputObjectFieldConfig{
+						Type:        comparisonType,
+						Description: "Filter by " + col.Name,
+					}
+				}
+			}
+
+			return fields
+		}),
 	})
 	fg.filterTypes[name] = boolExp
-
-	// Build fields
-	fields := graphql.InputObjectConfigFieldMap{
-		"_and": {
-			Type:        graphql.NewList(boolExp),
-			Description: "Logical AND",
-		},
-		"_or": {
-			Type:        graphql.NewList(boolExp),
-			Description: "Logical OR",
-		},
-		"_not": {
-			Type:        boolExp,
-			Description: "Logical NOT",
-		},
-	}
-
-	// Add column filters
-	for _, col := range view.Columns {
-		comparisonType := fg.getComparisonType(col)
-		if comparisonType != nil {
-			fields[col.Name] = &graphql.InputObjectFieldConfig{
-				Type:        comparisonType,
-				Description: "Filter by " + col.Name,
-			}
-		}
-	}
-
-	// Update the bool_exp with fields
-	for fieldName, fieldConfig := range fields {
-		boolExp.AddFieldConfig(fieldName, fieldConfig)
-	}
 
 	return boolExp
 }
