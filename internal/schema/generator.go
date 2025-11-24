@@ -522,11 +522,134 @@ func (g *Generator) getWhereInputType(tableName string) *graphql.InputObject {
 		return inputType
 	}
 
-	// Create a placeholder - this will be properly filled in later
-	return graphql.NewInputObject(graphql.InputObjectConfig{
-		Name:   name,
-		Fields: graphql.InputObjectConfigFieldMap{},
+	table := g.dbSchema.Tables[tableName]
+	if table == nil {
+		return nil
+	}
+
+	// Use thunk pattern to handle circular references
+	var boolExp *graphql.InputObject
+	boolExp = graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: name,
+		Fields: (graphql.InputObjectConfigFieldMapThunk)(func() graphql.InputObjectConfigFieldMap {
+			fields := graphql.InputObjectConfigFieldMap{
+				"_and": {
+					Type:        graphql.NewList(boolExp),
+					Description: "Logical AND",
+				},
+				"_or": {
+					Type:        graphql.NewList(boolExp),
+					Description: "Logical OR",
+				},
+				"_not": {
+					Type:        boolExp,
+					Description: "Logical NOT",
+				},
+			}
+
+			// Add column filters
+			for _, col := range table.Columns {
+				compType := g.getComparisonInputType(col)
+				if compType != nil {
+					fields[col.Name] = &graphql.InputObjectFieldConfig{
+						Type:        compType,
+						Description: "Filter by " + col.Name,
+					}
+				}
+			}
+
+			return fields
+		}),
 	})
+
+	g.inputTypes[name] = boolExp
+	return boolExp
+}
+
+// getComparisonInputType returns the comparison input type for a column
+func (g *Generator) getComparisonInputType(col *database.Column) *graphql.InputObject {
+	// Map SQL types to comparison input types
+	var compTypeName string
+
+	switch {
+	case col.SQLType == "integer" || col.SQLType == "int4" || col.SQLType == "smallint" || col.SQLType == "int2":
+		compTypeName = "Int_comparison_exp"
+	case col.SQLType == "bigint" || col.SQLType == "int8" || col.SQLType == "serial" || col.SQLType == "bigserial":
+		compTypeName = "Int_comparison_exp"
+	case col.SQLType == "numeric" || col.SQLType == "decimal" || col.SQLType == "real" || col.SQLType == "float4" || col.SQLType == "double precision" || col.SQLType == "float8":
+		compTypeName = "Float_comparison_exp"
+	case col.SQLType == "boolean" || col.SQLType == "bool":
+		compTypeName = "Boolean_comparison_exp"
+	case col.SQLType == "uuid":
+		compTypeName = "String_comparison_exp"
+	case col.SQLType == "timestamp" || col.SQLType == "timestamptz" || col.SQLType == "timestamp with time zone" || col.SQLType == "timestamp without time zone":
+		compTypeName = "String_comparison_exp"
+	case col.SQLType == "date":
+		compTypeName = "String_comparison_exp"
+	case col.SQLType == "time" || col.SQLType == "timetz":
+		compTypeName = "String_comparison_exp"
+	case col.SQLType == "json" || col.SQLType == "jsonb":
+		compTypeName = "String_comparison_exp"
+	default:
+		compTypeName = "String_comparison_exp"
+	}
+
+	// Return existing or create new
+	if compType, ok := g.inputTypes[compTypeName]; ok {
+		return compType
+	}
+
+	// Create comparison type if not exists
+	return g.createComparisonType(compTypeName)
+}
+
+// createComparisonType creates a comparison input type
+func (g *Generator) createComparisonType(name string) *graphql.InputObject {
+	if existing, ok := g.inputTypes[name]; ok {
+		return existing
+	}
+
+	var baseType graphql.Input
+	switch name {
+	case "Int_comparison_exp":
+		baseType = graphql.Int
+	case "Float_comparison_exp":
+		baseType = graphql.Float
+	case "Boolean_comparison_exp":
+		baseType = graphql.Boolean
+	default:
+		baseType = graphql.String
+	}
+
+	fields := graphql.InputObjectConfigFieldMap{
+		"_eq":  {Type: baseType, Description: "Equal to"},
+		"_neq": {Type: baseType, Description: "Not equal to"},
+		"_gt":  {Type: baseType, Description: "Greater than"},
+		"_gte": {Type: baseType, Description: "Greater than or equal to"},
+		"_lt":  {Type: baseType, Description: "Less than"},
+		"_lte": {Type: baseType, Description: "Less than or equal to"},
+		"_in":  {Type: graphql.NewList(baseType), Description: "In array"},
+		"_nin": {Type: graphql.NewList(baseType), Description: "Not in array"},
+		"_is_null": {Type: graphql.Boolean, Description: "Is null"},
+	}
+
+	// Add string-specific operators
+	if baseType == graphql.String {
+		fields["_like"] = &graphql.InputObjectFieldConfig{Type: graphql.String, Description: "Like pattern"}
+		fields["_nlike"] = &graphql.InputObjectFieldConfig{Type: graphql.String, Description: "Not like pattern"}
+		fields["_ilike"] = &graphql.InputObjectFieldConfig{Type: graphql.String, Description: "Case-insensitive like"}
+		fields["_nilike"] = &graphql.InputObjectFieldConfig{Type: graphql.String, Description: "Case-insensitive not like"}
+		fields["_similar"] = &graphql.InputObjectFieldConfig{Type: graphql.String, Description: "Similar to"}
+		fields["_nsimilar"] = &graphql.InputObjectFieldConfig{Type: graphql.String, Description: "Not similar to"}
+	}
+
+	compType := graphql.NewInputObject(graphql.InputObjectConfig{
+		Name:   name,
+		Fields: fields,
+	})
+
+	g.inputTypes[name] = compType
+	return compType
 }
 
 // getOrderByInputType returns the order by input type for a table
