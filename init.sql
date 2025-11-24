@@ -38,9 +38,10 @@ CREATE TABLE IF NOT EXISTS categories (
 
 -- Post-Category junction table
 CREATE TABLE IF NOT EXISTS post_categories (
+    id SERIAL PRIMARY KEY,
     post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
     category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
-    PRIMARY KEY (post_id, category_id)
+    UNIQUE (post_id, category_id)
 );
 
 -- Insert sample data
