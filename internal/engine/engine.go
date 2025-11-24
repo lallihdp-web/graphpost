@@ -60,8 +60,8 @@ func (e *Engine) Initialize(ctx context.Context) error {
 	// Create resolver
 	e.resolver = resolver.NewResolver(dbConn.Pool(), dbSchema, e.config.Database.Schema)
 
-	// Generate GraphQL schema
-	generator := schema.NewGenerator(dbSchema, &e.config.GraphQL)
+	// Generate GraphQL schema with resolver
+	generator := schema.NewGenerator(dbSchema, &e.config.GraphQL, e.resolver)
 	graphqlSchema, err := generator.Generate()
 	if err != nil {
 		return fmt.Errorf("failed to generate GraphQL schema: %w", err)
@@ -185,8 +185,8 @@ func (e *Engine) Reload(ctx context.Context) error {
 	// Recreate resolver
 	e.resolver = resolver.NewResolver(e.dbConn.Pool(), dbSchema, e.config.Database.Schema)
 
-	// Regenerate GraphQL schema
-	generator := schema.NewGenerator(dbSchema, &e.config.GraphQL)
+	// Regenerate GraphQL schema with resolver
+	generator := schema.NewGenerator(dbSchema, &e.config.GraphQL, e.resolver)
 	graphqlSchema, err := generator.Generate()
 	if err != nil {
 		return fmt.Errorf("failed to generate GraphQL schema: %w", err)

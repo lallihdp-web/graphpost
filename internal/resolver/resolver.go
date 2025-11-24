@@ -7,50 +7,32 @@ import (
 	"strings"
 
 	"github.com/graphpost/graphpost/internal/database"
+	"github.com/graphpost/graphpost/internal/schema"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Type aliases for schema types
+type QueryParams = schema.QueryParams
+type MutationParams = schema.MutationParams
+
 // Resolver handles GraphQL query resolution
 type Resolver struct {
 	pool     *pgxpool.Pool
-	schema   *database.Schema
 	dbSchema string
+	schema   *database.Schema
 }
 
 // NewResolver creates a new resolver
-func NewResolver(pool *pgxpool.Pool, schema *database.Schema, dbSchema string) *Resolver {
-	if dbSchema == "" {
-		dbSchema = "public"
+func NewResolver(pool *pgxpool.Pool, dbSchema *database.Schema, schemaName string) *Resolver {
+	if schemaName == "" {
+		schemaName = "public"
 	}
 	return &Resolver{
 		pool:     pool,
-		schema:   schema,
-		dbSchema: dbSchema,
+		schema:   dbSchema,
+		dbSchema: schemaName,
 	}
-}
-
-// QueryParams represents parameters for a query
-type QueryParams struct {
-	TableName  string
-	Where      map[string]interface{}
-	OrderBy    []map[string]interface{}
-	Limit      *int
-	Offset     *int
-	DistinctOn []string
-	Fields     []string
-}
-
-// MutationParams represents parameters for a mutation
-type MutationParams struct {
-	TableName  string
-	Object     map[string]interface{}
-	Objects    []map[string]interface{}
-	Where      map[string]interface{}
-	SetValues  map[string]interface{}
-	IncValues  map[string]interface{}
-	OnConflict map[string]interface{}
-	PKColumns  map[string]interface{}
 }
 
 // ResolveQuery resolves a GraphQL query

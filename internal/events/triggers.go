@@ -137,11 +137,40 @@ func NewTriggerManager(db *database.Connection, cfg *config.EventsConfig) *Trigg
 
 // Start starts the event trigger manager
 func (tm *TriggerManager) Start(ctx context.Context) {
+	// Ensure events table exists
+	tm.ensureEventsTable(ctx)
+
 	// Start event processor
 	go tm.processEvents(ctx)
 
 	// Start event poller
 	go tm.pollEvents(ctx)
+}
+
+// ensureEventsTable creates the events table if it doesn't exist
+func (tm *TriggerManager) ensureEventsTable(ctx context.Context) {
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS graphpost_events (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			trigger_name TEXT NOT NULL,
+			table_schema TEXT NOT NULL,
+			table_name TEXT NOT NULL,
+			operation TEXT NOT NULL,
+			old_data JSONB,
+			new_data JSONB,
+			status TEXT DEFAULT 'pending',
+			retry_count INTEGER DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			delivered_at TIMESTAMPTZ,
+			last_error TEXT,
+			delivery_attempts JSONB DEFAULT '[]'::jsonb
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_graphpost_events_status ON graphpost_events(status);
+		CREATE INDEX IF NOT EXISTS idx_graphpost_events_created_at ON graphpost_events(created_at);
+		CREATE INDEX IF NOT EXISTS idx_graphpost_events_trigger ON graphpost_events(trigger_name);
+	`
+	tm.db.Exec(ctx, createTableSQL)
 }
 
 // Stop stops the event trigger manager

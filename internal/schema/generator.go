@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,10 +10,57 @@ import (
 	"github.com/graphql-go/graphql"
 )
 
+// QueryResolver interface for resolving GraphQL queries
+type QueryResolver interface {
+	ResolveQuery(ctx context.Context, params QueryParams) ([]map[string]interface{}, error)
+	ResolveQueryByPK(ctx context.Context, tableName string, pkValues map[string]interface{}) (map[string]interface{}, error)
+	ResolveAggregate(ctx context.Context, params QueryParams) (map[string]interface{}, error)
+}
+
+// MutationResolver interface for resolving GraphQL mutations
+type MutationResolver interface {
+	ResolveInsertOne(ctx context.Context, params MutationParams) (map[string]interface{}, error)
+	ResolveInsert(ctx context.Context, params MutationParams) (map[string]interface{}, error)
+	ResolveUpdateByPK(ctx context.Context, params MutationParams) (map[string]interface{}, error)
+	ResolveUpdate(ctx context.Context, params MutationParams) (map[string]interface{}, error)
+	ResolveDeleteByPK(ctx context.Context, tableName string, pkValues map[string]interface{}) (map[string]interface{}, error)
+	ResolveDelete(ctx context.Context, params MutationParams) (map[string]interface{}, error)
+}
+
+// Resolver interface combines query and mutation resolvers
+type Resolver interface {
+	QueryResolver
+	MutationResolver
+}
+
+// QueryParams holds parameters for query resolution
+type QueryParams struct {
+	TableName  string
+	Where      map[string]interface{}
+	OrderBy    []map[string]interface{}
+	Limit      *int
+	Offset     *int
+	DistinctOn []string
+	Fields     []string
+}
+
+// MutationParams holds parameters for mutation resolution
+type MutationParams struct {
+	TableName  string
+	Object     map[string]interface{}
+	Objects    []map[string]interface{}
+	Where      map[string]interface{}
+	SetValues  map[string]interface{}
+	IncValues  map[string]interface{}
+	OnConflict map[string]interface{}
+	PKColumns  map[string]interface{}
+}
+
 // Generator generates GraphQL schema from database schema
 type Generator struct {
 	dbSchema      *database.Schema
 	graphqlConfig *config.GraphQLConfig
+	resolver      Resolver
 	types         map[string]*graphql.Object
 	inputTypes    map[string]*graphql.InputObject
 	enumTypes     map[string]*graphql.Enum
@@ -41,7 +89,7 @@ const (
 )
 
 // NewGenerator creates a new schema generator
-func NewGenerator(dbSchema *database.Schema, gqlConfig *config.GraphQLConfig) *Generator {
+func NewGenerator(dbSchema *database.Schema, gqlConfig *config.GraphQLConfig, resolver Resolver) *Generator {
 	// Use defaults if config not provided
 	if gqlConfig == nil {
 		gqlConfig = &config.GraphQLConfig{
@@ -54,6 +102,7 @@ func NewGenerator(dbSchema *database.Schema, gqlConfig *config.GraphQLConfig) *G
 	return &Generator{
 		dbSchema:      dbSchema,
 		graphqlConfig: gqlConfig,
+		resolver:      resolver,
 		types:         make(map[string]*graphql.Object),
 		inputTypes:    make(map[string]*graphql.InputObject),
 		enumTypes:     make(map[string]*graphql.Enum),
@@ -688,6 +737,9 @@ func (g *Generator) generateQueryFields() graphql.Fields {
 			continue
 		}
 
+		// Capture tableName for closure
+		tn := tableName
+
 		// Query for multiple records: tableName(where, order_by, limit, offset)
 		fields[tableName] = &graphql.Field{
 			Type:        graphql.NewList(tableType),
@@ -714,6 +766,13 @@ func (g *Generator) generateQueryFields() graphql.Fields {
 					Description: "Select distinct on columns",
 				},
 			},
+			Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+				if g.resolver == nil {
+					return nil, fmt.Errorf("resolver not configured")
+				}
+				params := g.extractQueryParams(tn, p.Args)
+				return g.resolver.ResolveQuery(p.Context, params)
+			},
 		}
 
 		// Query by primary key: tableName_by_pk(pk_columns)
@@ -735,6 +794,16 @@ func (g *Generator) generateQueryFields() graphql.Fields {
 					Type:        tableType,
 					Description: fmt.Sprintf("Fetch a single row from table %s by primary key", tableName),
 					Args:        pkArgs,
+					Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+						if g.resolver == nil {
+							return nil, fmt.Errorf("resolver not configured")
+						}
+						pkValues := make(map[string]interface{})
+						for k, v := range p.Args {
+							pkValues[k] = v
+						}
+						return g.resolver.ResolveQueryByPK(p.Context, tn, pkValues)
+					},
 				}
 			}
 		}
@@ -761,6 +830,13 @@ func (g *Generator) generateQueryFields() graphql.Fields {
 					Description: "Skip the first n results",
 				},
 			},
+			Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+				if g.resolver == nil {
+					return nil, fmt.Errorf("resolver not configured")
+				}
+				params := g.extractQueryParams(tn, p.Args)
+				return g.resolver.ResolveAggregate(p.Context, params)
+			},
 		}
 	}
 
@@ -770,6 +846,9 @@ func (g *Generator) generateQueryFields() graphql.Fields {
 		if viewType == nil {
 			continue
 		}
+
+		// Capture viewName for closure
+		vn := viewName
 
 		fields[viewName] = &graphql.Field{
 			Type:        graphql.NewList(viewType),
@@ -792,10 +871,54 @@ func (g *Generator) generateQueryFields() graphql.Fields {
 					Description: "Skip the first n results",
 				},
 			},
+			Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+				if g.resolver == nil {
+					return nil, fmt.Errorf("resolver not configured")
+				}
+				params := g.extractQueryParams(vn, p.Args)
+				return g.resolver.ResolveQuery(p.Context, params)
+			},
 		}
 	}
 
 	return fields
+}
+
+// extractQueryParams extracts QueryParams from GraphQL arguments
+func (g *Generator) extractQueryParams(tableName string, args map[string]interface{}) QueryParams {
+	params := QueryParams{
+		TableName: tableName,
+	}
+
+	if where, ok := args["where"].(map[string]interface{}); ok {
+		params.Where = where
+	}
+
+	if orderBy, ok := args["order_by"].([]interface{}); ok {
+		for _, ob := range orderBy {
+			if obMap, ok := ob.(map[string]interface{}); ok {
+				params.OrderBy = append(params.OrderBy, obMap)
+			}
+		}
+	}
+
+	if limit, ok := args["limit"].(int); ok {
+		params.Limit = &limit
+	}
+
+	if offset, ok := args["offset"].(int); ok {
+		params.Offset = &offset
+	}
+
+	if distinctOn, ok := args["distinct_on"].([]interface{}); ok {
+		for _, d := range distinctOn {
+			if ds, ok := d.(string); ok {
+				params.DistinctOn = append(params.DistinctOn, ds)
+			}
+		}
+	}
+
+	return params
 }
 
 // generateMutationFields creates mutation fields for the schema
@@ -807,6 +930,9 @@ func (g *Generator) generateMutationFields() graphql.Fields {
 		if tableType == nil {
 			continue
 		}
+
+		// Capture tableName for closure
+		tn := tableName
 
 		insertInput := g.inputTypes[tableName+"_insert_input"]
 		setInput := g.inputTypes[tableName+"_set_input"]
@@ -827,6 +953,21 @@ func (g *Generator) generateMutationFields() graphql.Fields {
 						Description: "On conflict condition",
 					},
 				},
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					if g.resolver == nil {
+						return nil, fmt.Errorf("resolver not configured")
+					}
+					params := MutationParams{
+						TableName: tn,
+					}
+					if obj, ok := p.Args["object"].(map[string]interface{}); ok {
+						params.Object = obj
+					}
+					if oc, ok := p.Args["on_conflict"].(map[string]interface{}); ok {
+						params.OnConflict = oc
+					}
+					return g.resolver.ResolveInsertOne(p.Context, params)
+				},
 			}
 
 			// Insert multiple: insert_tableName(objects)
@@ -842,6 +983,25 @@ func (g *Generator) generateMutationFields() graphql.Fields {
 						Type:        g.getOnConflictInputType(tableName),
 						Description: "On conflict condition",
 					},
+				},
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					if g.resolver == nil {
+						return nil, fmt.Errorf("resolver not configured")
+					}
+					params := MutationParams{
+						TableName: tn,
+					}
+					if objs, ok := p.Args["objects"].([]interface{}); ok {
+						for _, obj := range objs {
+							if objMap, ok := obj.(map[string]interface{}); ok {
+								params.Objects = append(params.Objects, objMap)
+							}
+						}
+					}
+					if oc, ok := p.Args["on_conflict"].(map[string]interface{}); ok {
+						params.OnConflict = oc
+					}
+					return g.resolver.ResolveInsert(p.Context, params)
 				},
 			}
 		}
@@ -865,6 +1025,24 @@ func (g *Generator) generateMutationFields() graphql.Fields {
 						Description: "Increments the numeric columns",
 					},
 				},
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					if g.resolver == nil {
+						return nil, fmt.Errorf("resolver not configured")
+					}
+					params := MutationParams{
+						TableName: tn,
+					}
+					if pk, ok := p.Args["pk_columns"].(map[string]interface{}); ok {
+						params.PKColumns = pk
+					}
+					if set, ok := p.Args["_set"].(map[string]interface{}); ok {
+						params.SetValues = set
+					}
+					if inc, ok := p.Args["_inc"].(map[string]interface{}); ok {
+						params.IncValues = inc
+					}
+					return g.resolver.ResolveUpdateByPK(p.Context, params)
+				},
 			}
 		}
 
@@ -886,6 +1064,24 @@ func (g *Generator) generateMutationFields() graphql.Fields {
 						Type:        g.inputTypes[tableName+"_inc_input"],
 						Description: "Increments the numeric columns",
 					},
+				},
+				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+					if g.resolver == nil {
+						return nil, fmt.Errorf("resolver not configured")
+					}
+					params := MutationParams{
+						TableName: tn,
+					}
+					if where, ok := p.Args["where"].(map[string]interface{}); ok {
+						params.Where = where
+					}
+					if set, ok := p.Args["_set"].(map[string]interface{}); ok {
+						params.SetValues = set
+					}
+					if inc, ok := p.Args["_inc"].(map[string]interface{}); ok {
+						params.IncValues = inc
+					}
+					return g.resolver.ResolveUpdate(p.Context, params)
 				},
 			}
 		}
@@ -911,6 +1107,16 @@ func (g *Generator) generateMutationFields() graphql.Fields {
 					Type:        tableType,
 					Description: fmt.Sprintf("Delete a single row from table %s by primary key", tableName),
 					Args:        pkArgs,
+					Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+						if g.resolver == nil {
+							return nil, fmt.Errorf("resolver not configured")
+						}
+						pkValues := make(map[string]interface{})
+						for k, v := range p.Args {
+							pkValues[k] = v
+						}
+						return g.resolver.ResolveDeleteByPK(p.Context, tn, pkValues)
+					},
 				}
 			}
 		}
@@ -924,6 +1130,18 @@ func (g *Generator) generateMutationFields() graphql.Fields {
 					Type:        graphql.NewNonNull(g.getWhereInputType(tableName)),
 					Description: "Filter the rows to delete",
 				},
+			},
+			Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+				if g.resolver == nil {
+					return nil, fmt.Errorf("resolver not configured")
+				}
+				params := MutationParams{
+					TableName: tn,
+				}
+				if where, ok := p.Args["where"].(map[string]interface{}); ok {
+					params.Where = where
+				}
+				return g.resolver.ResolveDelete(p.Context, params)
 			},
 		}
 	}
