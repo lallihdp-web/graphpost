@@ -298,6 +298,10 @@ func (g *Generator) generateRelationshipName(targetTable, sourceColumn string) s
 
 // generateArrayRelationshipName generates a name for an array relationship
 func (g *Generator) generateArrayRelationshipName(sourceTable string) string {
+	// Don't add 's' if already ends with 's'
+	if strings.HasSuffix(sourceTable, "s") {
+		return sourceTable
+	}
 	return sourceTable + "s"
 }
 
@@ -323,8 +327,10 @@ func (g *Generator) generateTableTypes() error {
 			}
 		}
 
-		// Add relationship fields (will be resolved later)
+		// Add relationship fields with resolvers
 		for _, rel := range g.relationships[tableName] {
+			// Capture relationship for closure
+			r := rel
 			if rel.IsArray {
 				if targetType, ok := g.types[rel.TargetTable]; ok {
 					fields[rel.Name] = &graphql.Field{
@@ -336,6 +342,30 @@ func (g *Generator) generateTableTypes() error {
 							"limit":    {Type: graphql.Int},
 							"offset":   {Type: graphql.Int},
 						},
+						Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+							if g.resolver == nil {
+								return nil, fmt.Errorf("resolver not configured")
+							}
+							// Get parent row's value for the source column
+							source, ok := p.Source.(map[string]interface{})
+							if !ok {
+								return nil, nil
+							}
+							parentValue := source[r.SourceColumn]
+							if parentValue == nil {
+								return []map[string]interface{}{}, nil
+							}
+
+							// Build where clause to filter by foreign key
+							params := g.extractQueryParams(r.TargetTable, p.Args)
+							if params.Where == nil {
+								params.Where = make(map[string]interface{})
+							}
+							params.Where[r.TargetColumn] = map[string]interface{}{
+								"_eq": parentValue,
+							}
+							return g.resolver.ResolveQuery(p.Context, params)
+						},
 					}
 				}
 			} else {
@@ -343,6 +373,26 @@ func (g *Generator) generateTableTypes() error {
 					fields[rel.Name] = &graphql.Field{
 						Type:        targetType,
 						Description: fmt.Sprintf("Object relationship to %s", rel.TargetTable),
+						Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+							if g.resolver == nil {
+								return nil, fmt.Errorf("resolver not configured")
+							}
+							// Get parent row's value for the source column
+							source, ok := p.Source.(map[string]interface{})
+							if !ok {
+								return nil, nil
+							}
+							fkValue := source[r.SourceColumn]
+							if fkValue == nil {
+								return nil, nil
+							}
+
+							// Query by primary key
+							pkValues := map[string]interface{}{
+								r.TargetColumn: fkValue,
+							}
+							return g.resolver.ResolveQueryByPK(p.Context, r.TargetTable, pkValues)
+						},
 					}
 				}
 			}
