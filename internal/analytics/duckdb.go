@@ -1,3 +1,5 @@
+//go:build cgo
+
 package analytics
 
 import (
@@ -37,6 +39,9 @@ type DuckDBConfig struct {
 
 	// TempDirectory for spilling large operations
 	TempDirectory string
+
+	// Enabled controls whether DuckDB analytics is enabled
+	Enabled bool
 }
 
 // NewDuckDB creates a new DuckDB instance
@@ -310,4 +315,9 @@ func max(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// IsAvailable returns whether DuckDB is available in this build
+func (d *DuckDB) IsAvailable() bool {
+	return true
 }

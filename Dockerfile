@@ -1,10 +1,15 @@
 # Build stage
 FROM golang:1.21-alpine AS builder
 
+# Build argument to enable CGO (for DuckDB support)
+ARG CGO_ENABLED=0
+
 WORKDIR /app
 
 # Install dependencies
-RUN apk add --no-cache git ca-certificates
+# Add build-base for CGO builds
+RUN apk add --no-cache git ca-certificates && \
+    if [ "$CGO_ENABLED" = "1" ]; then apk add --no-cache build-base; fi
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -14,7 +19,9 @@ RUN go mod download
 COPY . .
 
 # Build binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o graphpost ./cmd/graphpost
+# CGO_ENABLED=0: Lightweight build without DuckDB analytics
+# CGO_ENABLED=1: Full build with DuckDB analytics (requires larger image)
+RUN CGO_ENABLED=${CGO_ENABLED} GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o graphpost ./cmd/graphpost
 
 # Runtime stage
 FROM alpine:3.19
