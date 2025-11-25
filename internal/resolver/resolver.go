@@ -434,6 +434,42 @@ func (r *Resolver) applyPermissionFilters(ctx context.Context, params QueryParam
 	return params
 }
 
+// ResolveBatch resolves relationships in batch to prevent N+1 queries
+func (r *Resolver) ResolveBatch(ctx context.Context, tableName string, foreignKey string, keys []interface{}) (map[interface{}][]map[string]interface{}, error) {
+	if len(keys) == 0 {
+		return make(map[interface{}][]map[string]interface{}), nil
+	}
+
+	// Build query with IN clause
+	query := fmt.Sprintf("SELECT * FROM %s.%s WHERE %s = ANY($1)",
+		quoteIdentifier(r.dbSchema),
+		quoteIdentifier(tableName),
+		quoteIdentifier(foreignKey))
+
+	// Execute single query with all keys
+	rows, err := r.pool.Query(ctx, query, keys)
+	if err != nil {
+		return nil, fmt.Errorf("batch query failed: %w", err)
+	}
+	defer rows.Close()
+
+	// Scan all results
+	allResults, err := r.scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Group results by foreign key value
+	resultMap := make(map[interface{}][]map[string]interface{})
+	for _, row := range allResults {
+		if fkValue, ok := row[foreignKey]; ok {
+			resultMap[fkValue] = append(resultMap[fkValue], row)
+		}
+	}
+
+	return resultMap, nil
+}
+
 // buildSelectQuery builds a SELECT query
 func (r *Resolver) buildSelectQuery(params QueryParams) (string, []interface{}) {
 	var args []interface{}
