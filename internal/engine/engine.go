@@ -60,6 +60,12 @@ func (e *Engine) Initialize(ctx context.Context) error {
 	// Create resolver
 	e.resolver = resolver.NewResolver(dbConn.Pool(), dbSchema, e.config.Database.Schema)
 
+	// Initialize authenticator
+	e.authenticator = auth.NewAuthenticator(&e.config.Auth)
+
+	// Wire authenticator to resolver for permission checking
+	e.resolver.SetAuthenticator(e.authenticator)
+
 	// Generate GraphQL schema with resolver
 	generator := schema.NewGenerator(dbSchema, &e.config.GraphQL, e.resolver)
 	graphqlSchema, err := generator.Generate()
@@ -67,9 +73,6 @@ func (e *Engine) Initialize(ctx context.Context) error {
 		return fmt.Errorf("failed to generate GraphQL schema: %w", err)
 	}
 	e.graphqlSchema = graphqlSchema
-
-	// Initialize authenticator
-	e.authenticator = auth.NewAuthenticator(&e.config.Auth)
 
 	// Initialize subscription manager
 	e.subManager = subscription.NewManager(dbConn, e.resolver, dbSchema)

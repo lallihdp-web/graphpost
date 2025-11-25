@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/graphpost/graphpost/internal/auth"
 	"github.com/graphpost/graphpost/internal/database"
 	"github.com/graphpost/graphpost/internal/schema"
 	"github.com/jackc/pgx/v5"
@@ -18,9 +19,10 @@ type MutationParams = schema.MutationParams
 
 // Resolver handles GraphQL query resolution
 type Resolver struct {
-	pool     *pgxpool.Pool
-	dbSchema string
-	schema   *database.Schema
+	pool          *pgxpool.Pool
+	dbSchema      string
+	schema        *database.Schema
+	authenticator *auth.Authenticator
 }
 
 // NewResolver creates a new resolver
@@ -35,8 +37,16 @@ func NewResolver(pool *pgxpool.Pool, dbSchema *database.Schema, schemaName strin
 	}
 }
 
+// SetAuthenticator sets the authenticator for permission checking
+func (r *Resolver) SetAuthenticator(authenticator *auth.Authenticator) {
+	r.authenticator = authenticator
+}
+
 // ResolveQuery resolves a GraphQL query
 func (r *Resolver) ResolveQuery(ctx context.Context, params QueryParams) ([]map[string]interface{}, error) {
+	// Apply permission filters from session
+	params = r.applyPermissionFilters(ctx, params, auth.OperationSelect)
+
 	query, args := r.buildSelectQuery(params)
 
 	rows, err := r.pool.Query(ctx, query, args...)
@@ -403,6 +413,25 @@ func (r *Resolver) ResolveDelete(ctx context.Context, params MutationParams) (ma
 		"affected_rows": len(results),
 		"returning":     results,
 	}, nil
+}
+
+// applyPermissionFilters applies row-level security filters based on session
+func (r *Resolver) applyPermissionFilters(ctx context.Context, params QueryParams, op auth.OperationType) QueryParams {
+	// Get session from context
+	session := auth.GetSessionFromContext(ctx)
+	if session == nil || r.authenticator == nil {
+		return params
+	}
+
+	// Admin users bypass permission filters
+	if session.IsAdmin {
+		return params
+	}
+
+	// Apply row-level filters from permissions
+	params.Where = r.authenticator.ApplyRowFilter(session, params.TableName, op, params.Where)
+
+	return params
 }
 
 // buildSelectQuery builds a SELECT query
