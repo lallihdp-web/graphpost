@@ -58,6 +58,89 @@ func (r *Resolver) ResolveQuery(ctx context.Context, params QueryParams) ([]map[
 	return r.scanRows(rows)
 }
 
+// ResolveConnection resolves a query with cursor-based pagination
+// Returns a Connection with edges, cursors, and page info
+func (r *Resolver) ResolveConnection(ctx context.Context, params QueryParams) (*schema.Connection, error) {
+	// Apply permission filters from session
+	params = r.applyPermissionFilters(ctx, params, auth.OperationSelect)
+
+	// Get table to extract primary key columns
+	table := r.schema.Tables[params.TableName]
+	if table == nil {
+		return nil, fmt.Errorf("table %s not found", params.TableName)
+	}
+
+	// Get primary key columns
+	var pkColumns []string
+	if table.PrimaryKey != nil {
+		pkColumns = table.PrimaryKey.Columns
+	}
+	if len(pkColumns) == 0 {
+		return nil, fmt.Errorf("table %s has no primary key, cursor pagination requires a primary key", params.TableName)
+	}
+
+	// Apply cursor constraints to WHERE clause
+	if params.After != nil {
+		cursorData, err := schema.DecodeCursor(*params.After)
+		if err != nil {
+			return nil, fmt.Errorf("invalid after cursor: %w", err)
+		}
+		params.Where = schema.ApplyCursorToWhere(params.Where, cursorData, true, pkColumns)
+	}
+
+	if params.Before != nil {
+		cursorData, err := schema.DecodeCursor(*params.Before)
+		if err != nil {
+			return nil, fmt.Errorf("invalid before cursor: %w", err)
+		}
+		params.Where = schema.ApplyCursorToWhere(params.Where, cursorData, false, pkColumns)
+	}
+
+	// Determine limit: use First or Last, with +1 to detect if there are more pages
+	effectiveLimit := params.Limit
+	if params.First != nil {
+		// Fetch one extra to detect hasNextPage
+		extra := *params.First + 1
+		effectiveLimit = &extra
+	} else if params.Last != nil {
+		// Fetch one extra to detect hasPreviousPage
+		extra := *params.Last + 1
+		effectiveLimit = &extra
+	}
+	params.Limit = effectiveLimit
+
+	// Ensure we have ordering by primary key for consistent cursors
+	if len(params.OrderBy) == 0 {
+		params.OrderBy = []map[string]interface{}{}
+		for _, pkCol := range pkColumns {
+			params.OrderBy = append(params.OrderBy, map[string]interface{}{
+				pkCol: "asc",
+			})
+		}
+	}
+
+	// Execute query
+	query, args := r.buildSelectQuery(params)
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	results, err := r.scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Optionally get total count
+	var totalCount *int
+	// Note: Getting total count can be expensive for large datasets
+	// Consider making this optional or caching it
+
+	// Build connection with edges and page info
+	return schema.BuildConnection(results, pkColumns, params.OrderBy, params.First, params.Last, totalCount)
+}
+
 // ResolveQueryByPK resolves a query by primary key
 func (r *Resolver) ResolveQueryByPK(ctx context.Context, tableName string, pkValues map[string]interface{}) (map[string]interface{}, error) {
 	table := r.schema.Tables[tableName]

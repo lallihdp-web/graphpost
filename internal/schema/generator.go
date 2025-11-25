@@ -51,6 +51,11 @@ type QueryParams struct {
 	Offset     *int
 	DistinctOn []string
 	Fields     []string
+	// Cursor-based pagination
+	After  *string // Cursor to fetch records after
+	Before *string // Cursor to fetch records before
+	First  *int    // Fetch first N records (forward pagination)
+	Last   *int    // Fetch last N records (backward pagination)
 }
 
 // MutationParams holds parameters for mutation resolution
