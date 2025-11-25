@@ -371,13 +371,17 @@ func (c *Connection) Config() *config.DatabaseConfig {
 	return c.config
 }
 
-// Listener handles PostgreSQL LISTEN/NOTIFY using pgx
+// Listener handles PostgreSQL LISTEN/NOTIFY using pgx with automatic reconnection
 type Listener struct {
 	conn        *pgx.Conn
 	connConfig  *pgx.ConnConfig
 	channel     string
 	callback    func(notification *pgconn.Notification)
 	stopChan    chan struct{}
+	stopOnce    sync.Once
+	mu          sync.RWMutex
+	reconnectDelay time.Duration
+	maxReconnectDelay time.Duration
 }
 
 // NewListener creates a new LISTEN/NOTIFY listener
@@ -393,71 +397,172 @@ func NewListener(cfg *config.DatabaseConfig, channel string, callback func(notif
 	}
 
 	return &Listener{
-		connConfig: connConfig,
-		channel:    channel,
-		callback:   callback,
-		stopChan:   make(chan struct{}),
+		connConfig:        connConfig,
+		channel:           channel,
+		callback:          callback,
+		stopChan:          make(chan struct{}),
+		reconnectDelay:    1 * time.Second,
+		maxReconnectDelay: 30 * time.Second,
 	}, nil
 }
 
-// Start begins listening for notifications
+// Start begins listening for notifications with automatic reconnection
 func (l *Listener) Start(ctx context.Context) error {
+	if err := l.connect(ctx); err != nil {
+		return err
+	}
+
+	// Start notification handler goroutine with reconnection support
+	go l.handleNotifications(ctx)
+
+	return nil
+}
+
+// connect establishes a connection and starts listening on the channel
+func (l *Listener) connect(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Close existing connection if any
+	if l.conn != nil {
+		l.conn.Close(context.Background())
+		l.conn = nil
+	}
+
+	// Connect to database
 	conn, err := pgx.ConnectConfig(ctx, l.connConfig)
 	if err != nil {
 		return fmt.Errorf("failed to connect for listen: %w", err)
 	}
-	l.conn = conn
 
-	// Start listening
+	// Start listening on channel
 	_, err = conn.Exec(ctx, fmt.Sprintf("LISTEN %s", l.channel))
 	if err != nil {
 		conn.Close(ctx)
 		return fmt.Errorf("failed to listen on channel %s: %w", l.channel, err)
 	}
 
-	// Start notification handler goroutine
-	go l.handleNotifications(ctx)
-
+	l.conn = conn
+	log.Printf("[Listener] Connected and listening on channel: %s", l.channel)
 	return nil
 }
 
-// handleNotifications handles incoming notifications
+// reconnect attempts to reconnect with exponential backoff
+func (l *Listener) reconnect(ctx context.Context) bool {
+	delay := l.reconnectDelay
+
+	for {
+		select {
+		case <-l.stopChan:
+			return false
+		case <-ctx.Done():
+			return false
+		case <-time.After(delay):
+			log.Printf("[Listener] Attempting to reconnect to channel: %s", l.channel)
+
+			if err := l.connect(ctx); err != nil {
+				log.Printf("[Listener] Reconnection failed: %v", err)
+				// Exponential backoff
+				delay *= 2
+				if delay > l.maxReconnectDelay {
+					delay = l.maxReconnectDelay
+				}
+				continue
+			}
+
+			log.Printf("[Listener] Successfully reconnected to channel: %s", l.channel)
+			return true
+		}
+	}
+}
+
+// handleNotifications handles incoming notifications with automatic reconnection
 func (l *Listener) handleNotifications(ctx context.Context) {
 	for {
 		select {
 		case <-l.stopChan:
+			log.Printf("[Listener] Stopped listening on channel: %s", l.channel)
 			return
 		case <-ctx.Done():
+			log.Printf("[Listener] Context cancelled for channel: %s", l.channel)
 			return
 		default:
-			// Wait for notification with timeout
-			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			notification, err := l.conn.WaitForNotification(waitCtx)
-			cancel()
+			// Get current connection safely
+			l.mu.RLock()
+			conn := l.conn
+			l.mu.RUnlock()
 
-			if err != nil {
-				// Check if context was cancelled or timeout
-				if ctx.Err() != nil {
+			if conn == nil {
+				// Connection lost, attempt reconnection
+				log.Printf("[Listener] Connection lost, attempting to reconnect...")
+				if !l.reconnect(ctx) {
 					return
 				}
-				// Timeout is expected, continue
 				continue
 			}
 
+			// Wait for notification with context (fixes context propagation issue)
+			notification, err := conn.WaitForNotification(ctx)
+
+			if err != nil {
+				// Check if context was cancelled
+				if ctx.Err() != nil {
+					log.Printf("[Listener] Context done: %v", ctx.Err())
+					return
+				}
+
+				// Check if this is a connection error (not a timeout)
+				if pgconn.Timeout(err) {
+					// Timeout is expected when no notifications, continue
+					continue
+				}
+
+				// Connection error occurred, attempt reconnection
+				log.Printf("[Listener] Connection error: %v, attempting to reconnect...", err)
+				l.mu.Lock()
+				l.conn = nil
+				l.mu.Unlock()
+
+				if !l.reconnect(ctx) {
+					return
+				}
+				continue
+			}
+
+			// Successfully received notification
 			if l.callback != nil && notification != nil {
-				l.callback(notification)
+				// Run callback in a goroutine to avoid blocking the listener
+				go func(n *pgconn.Notification) {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[Listener] Callback panic: %v", r)
+						}
+					}()
+					l.callback(n)
+				}(notification)
 			}
 		}
 	}
 }
 
-// Stop stops listening for notifications
+// Stop stops listening for notifications and cleans up resources
 func (l *Listener) Stop(ctx context.Context) error {
-	close(l.stopChan)
-	if l.conn != nil {
-		return l.conn.Close(ctx)
-	}
-	return nil
+	var err error
+	l.stopOnce.Do(func() {
+		// Signal the listener to stop
+		close(l.stopChan)
+
+		// Close the connection safely
+		l.mu.Lock()
+		defer l.mu.Unlock()
+
+		if l.conn != nil {
+			log.Printf("[Listener] Closing connection for channel: %s", l.channel)
+			err = l.conn.Close(ctx)
+			l.conn = nil
+		}
+	})
+	return err
 }
 
 // ListenNotify is a legacy wrapper for compatibility
