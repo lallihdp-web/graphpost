@@ -70,23 +70,23 @@ func NewConnection(cfg *config.DatabaseConfig) (*Connection, error) {
 
 	// Connection lifetime settings
 	if poolCfg.MaxConnLifetime > 0 {
-		poolConfig.MaxConnLifetime = poolCfg.MaxConnLifetime
+		poolConfig.MaxConnLifetime = poolCfg.MaxConnLifetime.ToDuration()
 	} else if cfg.ConnMaxLifetime > 0 {
 		// Legacy fallback
-		poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime
+		poolConfig.MaxConnLifetime = cfg.ConnMaxLifetime.ToDuration()
 	} else {
 		poolConfig.MaxConnLifetime = 1 * time.Hour
 	}
 
 	if poolCfg.MaxConnIdleTime > 0 {
-		poolConfig.MaxConnIdleTime = poolCfg.MaxConnIdleTime
+		poolConfig.MaxConnIdleTime = poolCfg.MaxConnIdleTime.ToDuration()
 	} else {
 		poolConfig.MaxConnIdleTime = 30 * time.Minute
 	}
 
 	// Health check settings
 	if poolCfg.HealthCheckPeriod > 0 {
-		poolConfig.HealthCheckPeriod = poolCfg.HealthCheckPeriod
+		poolConfig.HealthCheckPeriod = poolCfg.HealthCheckPeriod.ToDuration()
 	} else {
 		poolConfig.HealthCheckPeriod = 1 * time.Minute
 	}
@@ -94,7 +94,7 @@ func NewConnection(cfg *config.DatabaseConfig) (*Connection, error) {
 	// Connection timeout
 	connectTimeout := 10 * time.Second
 	if poolCfg.ConnectTimeout > 0 {
-		connectTimeout = poolCfg.ConnectTimeout
+		connectTimeout = poolCfg.ConnectTimeout.ToDuration()
 	}
 	poolConfig.ConnConfig.ConnectTimeout = connectTimeout
 

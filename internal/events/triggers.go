@@ -310,7 +310,7 @@ func (tm *TriggerManager) dropDatabaseTrigger(trigger *EventTrigger) error {
 
 // pollEvents polls for pending events
 func (tm *TriggerManager) pollEvents(ctx context.Context) {
-	ticker := time.NewTicker(tm.config.FetchInterval)
+	ticker := time.NewTicker(tm.config.FetchInterval.ToDuration())
 	defer ticker.Stop()
 
 	for {

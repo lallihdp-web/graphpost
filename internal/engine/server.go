@@ -80,8 +80,8 @@ func (s *Server) Start() error {
 	s.server = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
 		Handler:      handler,
-		ReadTimeout:  cfg.Server.RequestTimeout,
-		WriteTimeout: cfg.Server.RequestTimeout,
+		ReadTimeout:  cfg.Server.RequestTimeout.ToDuration(),
+		WriteTimeout: cfg.Server.RequestTimeout.ToDuration(),
 	}
 
 	fmt.Printf("🚀 GraphPost server running at http://%s:%d\n", cfg.Server.Host, cfg.Server.Port)

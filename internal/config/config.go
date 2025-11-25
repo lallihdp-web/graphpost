@@ -2,9 +2,45 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 )
+
+// Duration is a custom type for parsing duration strings in JSON
+type Duration time.Duration
+
+// UnmarshalJSON implements json.Unmarshaler for Duration
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	var v interface{}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	switch value := v.(type) {
+	case float64:
+		*d = Duration(time.Duration(value))
+		return nil
+	case string:
+		tmp, err := time.ParseDuration(value)
+		if err != nil {
+			return err
+		}
+		*d = Duration(tmp)
+		return nil
+	default:
+		return fmt.Errorf("invalid duration type: %T", value)
+	}
+}
+
+// MarshalJSON implements json.Marshaler for Duration
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Duration(d).String())
+}
+
+// ToDuration converts Duration to time.Duration
+func (d Duration) ToDuration() time.Duration {
+	return time.Duration(d)
+}
 
 // Config represents the main configuration for GraphPost
 type Config struct {
@@ -23,12 +59,12 @@ type Config struct {
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Host              string        `json:"host"`
-	Port              int           `json:"port"`
-	EnablePlayground  bool          `json:"enable_playground"`
-	EnableIntrospection bool        `json:"enable_introspection"`
-	RequestTimeout    time.Duration `json:"request_timeout"`
-	MaxConnections    int           `json:"max_connections"`
+	Host              string   `json:"host"`
+	Port              int      `json:"port"`
+	EnablePlayground  bool     `json:"enable_playground"`
+	EnableIntrospection bool   `json:"enable_introspection"`
+	RequestTimeout    Duration `json:"request_timeout"`
+	MaxConnections    int      `json:"max_connections"`
 }
 
 // GraphQLConfig holds GraphQL operation configuration
@@ -51,7 +87,7 @@ type GraphQLConfig struct {
 	// QueryTimeout is the default timeout for queries
 	// Applied via context.WithTimeout at query execution
 	// 0 = no timeout (default)
-	QueryTimeout time.Duration `json:"query_timeout"`
+	QueryTimeout Duration `json:"query_timeout"`
 }
 
 // DatabaseConfig holds database connection configuration
@@ -68,9 +104,9 @@ type DatabaseConfig struct {
 	Pool PoolConfig `json:"pool"`
 
 	// Legacy fields (mapped to Pool config for backward compatibility)
-	MaxOpenConns    int           `json:"max_open_conns"`
-	MaxIdleConns    int           `json:"max_idle_conns"`
-	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
+	MaxOpenConns    int      `json:"max_open_conns"`
+	MaxIdleConns    int      `json:"max_idle_conns"`
+	ConnMaxLifetime Duration `json:"conn_max_lifetime"`
 }
 
 // PoolConfig holds pgx connection pool configuration
@@ -87,20 +123,20 @@ type PoolConfig struct {
 	// MaxConnLifetime is the maximum lifetime of a connection
 	// Connections older than this will be closed and replaced
 	// Default: 1 hour
-	MaxConnLifetime time.Duration `json:"max_conn_lifetime"`
+	MaxConnLifetime Duration `json:"max_conn_lifetime"`
 
 	// MaxConnIdleTime is the maximum time a connection can be idle
 	// Idle connections exceeding MinConns will be closed after this duration
 	// Default: 30 minutes
-	MaxConnIdleTime time.Duration `json:"max_conn_idle_time"`
+	MaxConnIdleTime Duration `json:"max_conn_idle_time"`
 
 	// HealthCheckPeriod is how often health checks are performed on idle connections
 	// Default: 1 minute
-	HealthCheckPeriod time.Duration `json:"health_check_period"`
+	HealthCheckPeriod Duration `json:"health_check_period"`
 
 	// ConnectTimeout is the timeout for establishing new connections
 	// Default: 10 seconds
-	ConnectTimeout time.Duration `json:"connect_timeout"`
+	ConnectTimeout Duration `json:"connect_timeout"`
 
 	// LazyConnect delays connection creation until first use
 	// Default: false
@@ -196,12 +232,12 @@ type ConsoleConfig struct {
 
 // EventsConfig holds event trigger configuration
 type EventsConfig struct {
-	Enabled           bool          `json:"enabled"`
-	HTTPPoolSize      int           `json:"http_pool_size"`
-	FetchInterval     time.Duration `json:"fetch_interval"`
-	RetryLimit        int           `json:"retry_limit"`
-	RetryIntervals    []int         `json:"retry_intervals"`
-	EnableManualTrigger bool        `json:"enable_manual_trigger"`
+	Enabled           bool     `json:"enabled"`
+	HTTPPoolSize      int      `json:"http_pool_size"`
+	FetchInterval     Duration `json:"fetch_interval"`
+	RetryLimit        int      `json:"retry_limit"`
+	RetryIntervals    []int    `json:"retry_intervals"`
+	EnableManualTrigger bool   `json:"enable_manual_trigger"`
 }
 
 // CORSConfig holds CORS configuration
@@ -266,7 +302,7 @@ type LoggingConfig struct {
 	// SlowQueryThreshold is the duration above which queries are logged as slow
 	// Set to 0 to disable slow query logging
 	// This helps identify queries that need optimization (indexes, partitioning)
-	SlowQueryThreshold time.Duration `json:"slow_query_threshold"`
+	SlowQueryThreshold Duration `json:"slow_query_threshold"`
 
 	// SlowQueryLogLevel is the level for slow query logs (warn, error)
 	SlowQueryLogLevel string `json:"slow_query_log_level"`
@@ -290,7 +326,7 @@ type CacheConfig struct {
 	Backend string `json:"backend"`
 
 	// DefaultTTL is the default time-to-live for cached items
-	DefaultTTL time.Duration `json:"default_ttl"`
+	DefaultTTL Duration `json:"default_ttl"`
 
 	// MaxSize is the maximum number of items in the cache (memory backend)
 	MaxSize int `json:"max_size"`
@@ -299,13 +335,13 @@ type CacheConfig struct {
 	QueryCacheEnabled bool `json:"query_cache_enabled"`
 
 	// QueryCacheTTL is the TTL for query results
-	QueryCacheTTL time.Duration `json:"query_cache_ttl"`
+	QueryCacheTTL Duration `json:"query_cache_ttl"`
 
 	// SchemaCacheEnabled enables database schema caching
 	SchemaCacheEnabled bool `json:"schema_cache_enabled"`
 
 	// SchemaCacheTTL is the TTL for schema cache
-	SchemaCacheTTL time.Duration `json:"schema_cache_ttl"`
+	SchemaCacheTTL Duration `json:"schema_cache_ttl"`
 
 	// ExcludedTables lists tables that should never be cached
 	ExcludedTables []string `json:"excluded_tables"`
@@ -354,7 +390,7 @@ type RefreshConfig struct {
 	SchedulerEnabled bool `json:"scheduler_enabled"`
 
 	// SchedulerInterval is how often to check for pending scheduled refreshes
-	SchedulerInterval time.Duration `json:"scheduler_interval"`
+	SchedulerInterval Duration `json:"scheduler_interval"`
 
 	// CDCEnabled enables CDC-based (Change Data Capture) refresh
 	// This monitors PostgreSQL for changes and triggers refreshes
@@ -367,7 +403,7 @@ type RefreshConfig struct {
 	CDCMode string `json:"cdc_mode"`
 
 	// CDCPollInterval is how often to poll PostgreSQL for changes (polling mode)
-	CDCPollInterval time.Duration `json:"cdc_poll_interval"`
+	CDCPollInterval Duration `json:"cdc_poll_interval"`
 
 	// CDCCreateTriggers automatically creates CDC triggers on monitored tables (realtime mode)
 	// When true, triggers are created automatically when aggregates are defined
@@ -378,17 +414,17 @@ type RefreshConfig struct {
 	CDCIncludeRowData bool `json:"cdc_include_row_data"`
 
 	// CDCReconnectDelay is the delay before reconnecting after a connection failure
-	CDCReconnectDelay time.Duration `json:"cdc_reconnect_delay"`
+	CDCReconnectDelay Duration `json:"cdc_reconnect_delay"`
 
 	// LazyTTL is the time-to-live for lazy-refreshed aggregates
 	// After this duration, the next query triggers a recomputation
-	LazyTTL time.Duration `json:"lazy_ttl"`
+	LazyTTL Duration `json:"lazy_ttl"`
 
 	// MaxConcurrentRefreshes limits parallel refresh operations
 	MaxConcurrentRefreshes int `json:"max_concurrent_refreshes"`
 
 	// RefreshTimeout is the maximum time for a single refresh operation
-	RefreshTimeout time.Duration `json:"refresh_timeout"`
+	RefreshTimeout Duration `json:"refresh_timeout"`
 }
 
 // RouterConfig holds query routing configuration
@@ -404,7 +440,7 @@ type RouterConfig struct {
 
 	// StalenessThreshold defines when materialized data is considered stale
 	// Queries for stale data will trigger refresh or fallback
-	StalenessThreshold time.Duration `json:"staleness_threshold"`
+	StalenessThreshold Duration `json:"staleness_threshold"`
 }
 
 // DefaultConfig returns the default configuration
@@ -415,7 +451,7 @@ func DefaultConfig() *Config {
 			Port:              8080,
 			EnablePlayground:  true,
 			EnableIntrospection: true,
-			RequestTimeout:    60 * time.Second,
+			RequestTimeout:    Duration(60 * time.Second),
 			MaxConnections:    1000,
 		},
 		Database: DatabaseConfig{
@@ -429,17 +465,17 @@ func DefaultConfig() *Config {
 			Pool: PoolConfig{
 				MinConns:             5,
 				MaxConns:             50,
-				MaxConnLifetime:      1 * time.Hour,
-				MaxConnIdleTime:      30 * time.Minute,
-				HealthCheckPeriod:    1 * time.Minute,
-				ConnectTimeout:       10 * time.Second,
+				MaxConnLifetime:      Duration(1 * time.Hour),
+				MaxConnIdleTime:      Duration(30 * time.Minute),
+				HealthCheckPeriod:    Duration(1 * time.Minute),
+				ConnectTimeout:       Duration(10 * time.Second),
 				LazyConnect:          false,
 				PreferSimpleProtocol: false,
 			},
 			// Legacy fields
 			MaxOpenConns:    50,
 			MaxIdleConns:    5,
-			ConnMaxLifetime: 1 * time.Hour,
+			ConnMaxLifetime: Duration(1 * time.Hour),
 		},
 		Auth: AuthConfig{
 			Enabled:           false,
@@ -458,7 +494,7 @@ func DefaultConfig() *Config {
 		Events: EventsConfig{
 			Enabled:           true,
 			HTTPPoolSize:      100,
-			FetchInterval:     1 * time.Second,
+			FetchInterval:     Duration(1 * time.Second),
 			RetryLimit:        3,
 			RetryIntervals:    []int{10, 30, 60},
 			EnableManualTrigger: true,
@@ -496,7 +532,7 @@ func DefaultConfig() *Config {
 			Output:             "stdout",
 			QueryLog:           false,
 			QueryLogLevel:      "debug",
-			SlowQueryThreshold: 1 * time.Second,
+			SlowQueryThreshold: Duration(1 * time.Second),
 			SlowQueryLogLevel:  "warn",
 			LogQueryParams:     false,
 			RequestLog:         true,
@@ -505,12 +541,12 @@ func DefaultConfig() *Config {
 		Cache: CacheConfig{
 			Enabled:            false,
 			Backend:            "memory",
-			DefaultTTL:         5 * time.Minute,
+			DefaultTTL:         Duration(5 * time.Minute),
 			MaxSize:            10000,
 			QueryCacheEnabled:  true,
-			QueryCacheTTL:      1 * time.Minute,
+			QueryCacheTTL:      Duration(1 * time.Minute),
 			SchemaCacheEnabled: true,
-			SchemaCacheTTL:     5 * time.Minute,
+			SchemaCacheTTL:     Duration(5 * time.Minute),
 			ExcludedTables:     []string{},
 			RedisHost:          "localhost",
 			RedisPort:          6379,
@@ -527,22 +563,22 @@ func DefaultConfig() *Config {
 			},
 			Refresh: RefreshConfig{
 				SchedulerEnabled:       true,
-				SchedulerInterval:      30 * time.Second,
+				SchedulerInterval:      Duration(30 * time.Second),
 				CDCEnabled:             false,
 				CDCMode:                "polling",
-				CDCPollInterval:        5 * time.Second,
+				CDCPollInterval:        Duration(5 * time.Second),
 				CDCCreateTriggers:      false,
 				CDCIncludeRowData:      false,
-				CDCReconnectDelay:      5 * time.Second,
-				LazyTTL:                5 * time.Minute,
+				CDCReconnectDelay:      Duration(5 * time.Second),
+				LazyTTL:                Duration(5 * time.Minute),
 				MaxConcurrentRefreshes: 4,
-				RefreshTimeout:         5 * time.Minute,
+				RefreshTimeout:         Duration(5 * time.Minute),
 			},
 			Router: RouterConfig{
 				Enabled:            true,
 				PreferMaterialized: true,
 				FallbackToLive:     true,
-				StalenessThreshold: 5 * time.Minute,
+				StalenessThreshold: Duration(5 * time.Minute),
 			},
 		},
 	}
@@ -603,22 +639,22 @@ func LoadFromEnv() *Config {
 	}
 	if maxLifetime := os.Getenv("GRAPHPOST_POOL_MAX_CONN_LIFETIME"); maxLifetime != "" {
 		if d, err := time.ParseDuration(maxLifetime); err == nil {
-			config.Database.Pool.MaxConnLifetime = d
+			config.Database.Pool.MaxConnLifetime = Duration(d)
 		}
 	}
 	if maxIdleTime := os.Getenv("GRAPHPOST_POOL_MAX_CONN_IDLE_TIME"); maxIdleTime != "" {
 		if d, err := time.ParseDuration(maxIdleTime); err == nil {
-			config.Database.Pool.MaxConnIdleTime = d
+			config.Database.Pool.MaxConnIdleTime = Duration(d)
 		}
 	}
 	if healthCheck := os.Getenv("GRAPHPOST_POOL_HEALTH_CHECK_PERIOD"); healthCheck != "" {
 		if d, err := time.ParseDuration(healthCheck); err == nil {
-			config.Database.Pool.HealthCheckPeriod = d
+			config.Database.Pool.HealthCheckPeriod = Duration(d)
 		}
 	}
 	if connectTimeout := os.Getenv("GRAPHPOST_POOL_CONNECT_TIMEOUT"); connectTimeout != "" {
 		if d, err := time.ParseDuration(connectTimeout); err == nil {
-			config.Database.Pool.ConnectTimeout = d
+			config.Database.Pool.ConnectTimeout = Duration(d)
 		}
 	}
 	if lazyConnect := os.Getenv("GRAPHPOST_POOL_LAZY_CONNECT"); lazyConnect == "true" {
@@ -649,7 +685,7 @@ func LoadFromEnv() *Config {
 	}
 	if queryTimeout := os.Getenv("GRAPHPOST_QUERY_TIMEOUT"); queryTimeout != "" {
 		if d, err := time.ParseDuration(queryTimeout); err == nil {
-			config.GraphQL.QueryTimeout = d
+			config.GraphQL.QueryTimeout = Duration(d)
 		}
 	}
 
@@ -703,7 +739,7 @@ func LoadFromEnv() *Config {
 	}
 	if slowQueryThreshold := os.Getenv("GRAPHPOST_SLOW_QUERY_THRESHOLD"); slowQueryThreshold != "" {
 		if d, err := time.ParseDuration(slowQueryThreshold); err == nil {
-			config.Logging.SlowQueryThreshold = d
+			config.Logging.SlowQueryThreshold = Duration(d)
 		}
 	}
 	if slowQueryLogLevel := os.Getenv("GRAPHPOST_SLOW_QUERY_LOG_LEVEL"); slowQueryLogLevel != "" {
@@ -728,7 +764,7 @@ func LoadFromEnv() *Config {
 	}
 	if cacheTTL := os.Getenv("GRAPHPOST_CACHE_TTL"); cacheTTL != "" {
 		if d, err := time.ParseDuration(cacheTTL); err == nil {
-			config.Cache.DefaultTTL = d
+			config.Cache.DefaultTTL = Duration(d)
 		}
 	}
 	if cacheMaxSize := os.Getenv("GRAPHPOST_CACHE_MAX_SIZE"); cacheMaxSize != "" {
@@ -742,7 +778,7 @@ func LoadFromEnv() *Config {
 	}
 	if queryCacheTTL := os.Getenv("GRAPHPOST_CACHE_QUERY_TTL"); queryCacheTTL != "" {
 		if d, err := time.ParseDuration(queryCacheTTL); err == nil {
-			config.Cache.QueryCacheTTL = d
+			config.Cache.QueryCacheTTL = Duration(d)
 		}
 	}
 	if schemaCacheEnabled := os.Getenv("GRAPHPOST_CACHE_SCHEMA_ENABLED"); schemaCacheEnabled == "false" {
@@ -750,7 +786,7 @@ func LoadFromEnv() *Config {
 	}
 	if schemaCacheTTL := os.Getenv("GRAPHPOST_CACHE_SCHEMA_TTL"); schemaCacheTTL != "" {
 		if d, err := time.ParseDuration(schemaCacheTTL); err == nil {
-			config.Cache.SchemaCacheTTL = d
+			config.Cache.SchemaCacheTTL = Duration(d)
 		}
 	}
 	if redisHost := os.Getenv("GRAPHPOST_REDIS_HOST"); redisHost != "" {
@@ -798,7 +834,7 @@ func LoadFromEnv() *Config {
 	}
 	if schedulerInterval := os.Getenv("GRAPHPOST_ANALYTICS_SCHEDULER_INTERVAL"); schedulerInterval != "" {
 		if d, err := time.ParseDuration(schedulerInterval); err == nil {
-			config.Analytics.Refresh.SchedulerInterval = d
+			config.Analytics.Refresh.SchedulerInterval = Duration(d)
 		}
 	}
 	if cdcEnabled := os.Getenv("GRAPHPOST_ANALYTICS_CDC_ENABLED"); cdcEnabled == "true" {
@@ -806,7 +842,7 @@ func LoadFromEnv() *Config {
 	}
 	if cdcPollInterval := os.Getenv("GRAPHPOST_ANALYTICS_CDC_POLL_INTERVAL"); cdcPollInterval != "" {
 		if d, err := time.ParseDuration(cdcPollInterval); err == nil {
-			config.Analytics.Refresh.CDCPollInterval = d
+			config.Analytics.Refresh.CDCPollInterval = Duration(d)
 		}
 	}
 	if cdcMode := os.Getenv("GRAPHPOST_ANALYTICS_CDC_MODE"); cdcMode != "" {
@@ -820,12 +856,12 @@ func LoadFromEnv() *Config {
 	}
 	if cdcReconnectDelay := os.Getenv("GRAPHPOST_ANALYTICS_CDC_RECONNECT_DELAY"); cdcReconnectDelay != "" {
 		if d, err := time.ParseDuration(cdcReconnectDelay); err == nil {
-			config.Analytics.Refresh.CDCReconnectDelay = d
+			config.Analytics.Refresh.CDCReconnectDelay = Duration(d)
 		}
 	}
 	if lazyTTL := os.Getenv("GRAPHPOST_ANALYTICS_LAZY_TTL"); lazyTTL != "" {
 		if d, err := time.ParseDuration(lazyTTL); err == nil {
-			config.Analytics.Refresh.LazyTTL = d
+			config.Analytics.Refresh.LazyTTL = Duration(d)
 		}
 	}
 	if maxConcurrent := os.Getenv("GRAPHPOST_ANALYTICS_MAX_CONCURRENT_REFRESHES"); maxConcurrent != "" {
@@ -836,7 +872,7 @@ func LoadFromEnv() *Config {
 	}
 	if refreshTimeout := os.Getenv("GRAPHPOST_ANALYTICS_REFRESH_TIMEOUT"); refreshTimeout != "" {
 		if d, err := time.ParseDuration(refreshTimeout); err == nil {
-			config.Analytics.Refresh.RefreshTimeout = d
+			config.Analytics.Refresh.RefreshTimeout = Duration(d)
 		}
 	}
 
@@ -852,7 +888,7 @@ func LoadFromEnv() *Config {
 	}
 	if stalenessThreshold := os.Getenv("GRAPHPOST_ANALYTICS_STALENESS_THRESHOLD"); stalenessThreshold != "" {
 		if d, err := time.ParseDuration(stalenessThreshold); err == nil {
-			config.Analytics.Router.StalenessThreshold = d
+			config.Analytics.Router.StalenessThreshold = Duration(d)
 		}
 	}
 
@@ -873,16 +909,16 @@ func parseDatabaseURL(url string) DatabaseConfig {
 		Pool: PoolConfig{
 			MinConns:             5,
 			MaxConns:             50,
-			MaxConnLifetime:      1 * time.Hour,
-			MaxConnIdleTime:      30 * time.Minute,
-			HealthCheckPeriod:    1 * time.Minute,
-			ConnectTimeout:       10 * time.Second,
+			MaxConnLifetime:      Duration(1 * time.Hour),
+			MaxConnIdleTime:      Duration(30 * time.Minute),
+			HealthCheckPeriod:    Duration(1 * time.Minute),
+			ConnectTimeout:       Duration(10 * time.Second),
 			LazyConnect:          false,
 			PreferSimpleProtocol: false,
 		},
 		MaxOpenConns:    50,
 		MaxIdleConns:    5,
-		ConnMaxLifetime: 1 * time.Hour,
+		ConnMaxLifetime: Duration(1 * time.Hour),
 	}
 	// URL format: postgres://user:password@host:port/database?sslmode=disable
 	// This is a simplified parser - use net/url for production
