@@ -458,6 +458,7 @@ func (g *Generator) columnToField(col *database.Column) *graphql.Field {
 }
 
 // sqlTypeToGraphQL converts SQL type to GraphQL type
+// Comprehensive mapping for all PostgreSQL built-in types
 func (g *Generator) sqlTypeToGraphQL(col *database.Column) graphql.Output {
 	var baseType graphql.Output
 
@@ -466,36 +467,85 @@ func (g *Generator) sqlTypeToGraphQL(col *database.Column) graphql.Output {
 		baseType = enumType
 	} else {
 		// Map SQL types to GraphQL types
-		switch strings.ToLower(col.SQLType) {
+		sqlType := strings.ToLower(col.SQLType)
+		switch sqlType {
+		// Integer types
 		case "int2", "int4", "smallint", "integer", "smallserial", "serial":
 			baseType = graphql.Int
 		case "int8", "bigint", "bigserial":
 			baseType = BigInt
+
+		// Floating point and numeric types
 		case "float4", "float8", "real", "double precision", "numeric", "decimal", "money":
 			baseType = graphql.Float
+
+		// Boolean types
 		case "bool", "boolean":
 			baseType = graphql.Boolean
+
+		// Character types (text, varchar, char, etc.)
+		case "text", "varchar", "character varying", "char", "character", "bpchar", "name":
+			baseType = graphql.String
+
+		// UUID type
 		case "uuid":
 			baseType = UUID
+
+		// JSON types
 		case "json", "jsonb":
 			baseType = JSON
+
+		// Date/Time types
 		case "date":
 			baseType = Date
-		case "time", "timetz":
+		case "time", "timetz", "time without time zone", "time with time zone":
 			baseType = Time
-		case "timestamp", "timestamptz":
+		case "timestamp", "timestamptz", "timestamp without time zone", "timestamp with time zone":
 			baseType = Timestamp
 		case "interval":
 			baseType = graphql.String
+
+		// Binary types
 		case "bytea":
 			baseType = graphql.String // Base64 encoded
-		case "inet", "cidr", "macaddr":
+
+		// Network address types
+		case "inet", "cidr", "macaddr", "macaddr8":
 			baseType = graphql.String
+
+		// Bit string types
+		case "bit", "bit varying", "varbit":
+			baseType = graphql.String
+
+		// Geometric types
 		case "point", "line", "lseg", "box", "path", "polygon", "circle":
 			baseType = JSON // Geometry types as JSON
+
+		// Full-text search types
 		case "tsvector", "tsquery":
 			baseType = graphql.String
+
+		// XML type
+		case "xml":
+			baseType = graphql.String
+
+		// Range types
+		case "int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange":
+			baseType = JSON // Range types as JSON
+
+		// PostgreSQL LSN (Log Sequence Number)
+		case "pg_lsn":
+			baseType = graphql.String
+
+		// Object identifier types
+		case "oid", "regproc", "regprocedure", "regoper", "regoperator",
+			"regclass", "regtype", "regrole", "regnamespace", "regconfig", "regdictionary":
+			baseType = graphql.String
+
+		// Array element types (should be handled by IsArray check below, but fallback)
 		default:
+			// For unknown types, default to String
+			// This ensures forward compatibility with custom types and extensions
 			baseType = graphql.String
 		}
 	}
