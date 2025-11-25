@@ -4,15 +4,22 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Introspector handles database schema introspection
+// Introspector handles database schema introspection with caching
 type Introspector struct {
-	pool   *pgxpool.Pool
-	schema string
+	pool       *pgxpool.Pool
+	schema     string
+	cache      *Schema
+	cacheMu    sync.RWMutex
+	cacheTime  time.Time
+	cacheTTL   time.Duration
+	cacheEnabled bool
 }
 
 // Schema represents the complete database schema
@@ -158,19 +165,58 @@ type Trigger struct {
 	Enabled    bool
 }
 
-// NewIntrospector creates a new database introspector
+// NewIntrospector creates a new database introspector with optional caching
 func NewIntrospector(pool *pgxpool.Pool, schema string) *Introspector {
 	if schema == "" {
 		schema = "public"
 	}
 	return &Introspector{
-		pool:   pool,
-		schema: schema,
+		pool:         pool,
+		schema:       schema,
+		cacheTTL:     5 * time.Minute, // Cache schema for 5 minutes by default
+		cacheEnabled: true,
 	}
 }
 
-// IntrospectSchema performs complete database introspection
+// WithCacheTTL sets a custom cache TTL
+func (i *Introspector) WithCacheTTL(ttl time.Duration) *Introspector {
+	i.cacheTTL = ttl
+	return i
+}
+
+// WithoutCache disables schema caching
+func (i *Introspector) WithoutCache() *Introspector {
+	i.cacheEnabled = false
+	return i
+}
+
+// InvalidateCache clears the cached schema, forcing a fresh introspection
+func (i *Introspector) InvalidateCache() {
+	i.cacheMu.Lock()
+	defer i.cacheMu.Unlock()
+	i.cache = nil
+	i.cacheTime = time.Time{}
+}
+
+// IntrospectSchema performs complete database introspection with caching
 func (i *Introspector) IntrospectSchema(ctx context.Context) (*Schema, error) {
+	// Check if context is already cancelled
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("introspection cancelled before starting (schema: %s): %w", i.schema, ctx.Err())
+	}
+
+	// Try to return from cache if enabled and valid
+	if i.cacheEnabled {
+		i.cacheMu.RLock()
+		if i.cache != nil && time.Since(i.cacheTime) < i.cacheTTL {
+			cachedSchema := i.cache
+			i.cacheMu.RUnlock()
+			return cachedSchema, nil
+		}
+		i.cacheMu.RUnlock()
+	}
+
+	// Perform full introspection
 	schema := &Schema{
 		Tables:    make(map[string]*Table),
 		Views:     make(map[string]*View),
@@ -184,28 +230,30 @@ func (i *Introspector) IntrospectSchema(ctx context.Context) (*Schema, error) {
 	// Introspect enums first (needed for column types)
 	enums, err := i.IntrospectEnums(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to introspect enums: %w", err)
+		return nil, fmt.Errorf("introspection failed for schema '%s' while loading enums: %w", i.schema, err)
 	}
 	schema.Enums = enums
 
 	// Introspect tables
 	tables, err := i.IntrospectTables(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to introspect tables: %w", err)
+		return nil, fmt.Errorf("introspection failed for schema '%s' while loading tables (found %d enums so far): %w",
+			i.schema, len(enums), err)
 	}
 	schema.Tables = tables
 
 	// Introspect views
 	views, err := i.IntrospectViews(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to introspect views: %w", err)
+		return nil, fmt.Errorf("introspection failed for schema '%s' while loading views (found %d tables, %d enums): %w",
+			i.schema, len(tables), len(enums), err)
 	}
 	schema.Views = views
 
 	// Introspect foreign keys
 	foreignKeys, err := i.IntrospectForeignKeys(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to introspect foreign keys: %w", err)
+		return nil, fmt.Errorf("introspection failed for schema '%s' while loading foreign keys: %w", i.schema, err)
 	}
 	schema.ForeignKeys = foreignKeys
 
@@ -219,16 +267,24 @@ func (i *Introspector) IntrospectSchema(ctx context.Context) (*Schema, error) {
 	// Introspect functions
 	functions, err := i.IntrospectFunctions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to introspect functions: %w", err)
+		return nil, fmt.Errorf("introspection failed for schema '%s' while loading functions: %w", i.schema, err)
 	}
 	schema.Functions = functions
 
 	// Introspect sequences
 	sequences, err := i.IntrospectSequences(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to introspect sequences: %w", err)
+		return nil, fmt.Errorf("introspection failed for schema '%s' while loading sequences: %w", i.schema, err)
 	}
 	schema.Sequences = sequences
+
+	// Update cache if enabled
+	if i.cacheEnabled {
+		i.cacheMu.Lock()
+		i.cache = schema
+		i.cacheTime = time.Now()
+		i.cacheMu.Unlock()
+	}
 
 	return schema, nil
 }
@@ -311,6 +367,11 @@ func (i *Introspector) IntrospectTables(ctx context.Context) (map[string]*Table,
 
 // IntrospectColumns retrieves all columns for a table
 func (i *Introspector) IntrospectColumns(ctx context.Context, tableName string) ([]*Column, error) {
+	// Check context before expensive operation
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("column introspection cancelled for table '%s.%s': %w", i.schema, tableName, ctx.Err())
+	}
+
 	query := `
 		SELECT
 			c.column_name,
@@ -332,7 +393,10 @@ func (i *Introspector) IntrospectColumns(ctx context.Context, tableName string) 
 
 	rows, err := i.pool.Query(ctx, query, i.schema, tableName)
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("query cancelled while fetching columns for table '%s.%s': %w", i.schema, tableName, ctx.Err())
+		}
+		return nil, fmt.Errorf("failed to query columns for table '%s.%s': %w", i.schema, tableName, err)
 	}
 	defer rows.Close()
 
@@ -355,7 +419,7 @@ func (i *Introspector) IntrospectColumns(ctx context.Context, tableName string) 
 			&scale,
 			&comment,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan column data for table '%s.%s': %w", i.schema, tableName, err)
 		}
 
 		if defaultValue != nil {
