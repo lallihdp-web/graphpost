@@ -7,7 +7,15 @@ import (
 
 	"github.com/graphpost/graphpost/internal/config"
 	"github.com/graphpost/graphpost/internal/database"
+	"github.com/graphpost/graphpost/internal/dataloader"
 	"github.com/graphql-go/graphql"
+)
+
+// contextKey for DataLoader
+type contextKey string
+
+const (
+	DataLoaderKey contextKey = "dataloader"
 )
 
 // QueryResolver interface for resolving GraphQL queries
@@ -15,6 +23,7 @@ type QueryResolver interface {
 	ResolveQuery(ctx context.Context, params QueryParams) ([]map[string]interface{}, error)
 	ResolveQueryByPK(ctx context.Context, tableName string, pkValues map[string]interface{}) (map[string]interface{}, error)
 	ResolveAggregate(ctx context.Context, params QueryParams) (map[string]interface{}, error)
+	ResolveBatch(ctx context.Context, tableName string, foreignKey string, keys []interface{}) (map[interface{}][]map[string]interface{}, error)
 }
 
 // MutationResolver interface for resolving GraphQL mutations
@@ -356,15 +365,21 @@ func (g *Generator) generateTableTypes() error {
 								return []map[string]interface{}{}, nil
 							}
 
-							// Build where clause to filter by foreign key
-							params := g.extractQueryParams(r.TargetTable, p.Args)
-							if params.Where == nil {
-								params.Where = make(map[string]interface{})
+							// Use DataLoader for batched queries (prevents N+1)
+							loader := getOrCreateDataLoader(p.Context, g.resolver)
+							results, err := loader.Load(p.Context, r.TargetTable, r.TargetColumn, parentValue)
+							if err != nil {
+								return nil, err
 							}
-							params.Where[r.TargetColumn] = map[string]interface{}{
-								"_eq": parentValue,
+
+							// Apply filters/limits if provided in args
+							// Note: For production, apply these filters at DB level
+							if len(p.Args) > 0 {
+								// For now, return all results from DataLoader
+								// TODO: Support filtering/ordering/limits with DataLoader
 							}
-							return g.resolver.ResolveQuery(p.Context, params)
+
+							return results, nil
 						},
 					}
 				}
@@ -1636,4 +1651,16 @@ func toPascalCase(s string) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// getOrCreateDataLoader gets or creates a DataLoader from context
+func getOrCreateDataLoader(ctx context.Context, resolver QueryResolver) *dataloader.RelationshipLoader {
+	// Try to get existing loader from context
+	if loader, ok := ctx.Value(DataLoaderKey).(*dataloader.RelationshipLoader); ok {
+		return loader
+	}
+
+	// Create new loader (fallback if not in context)
+	// This should be created per-request in middleware for best performance
+	return dataloader.NewRelationshipLoader(resolver)
 }

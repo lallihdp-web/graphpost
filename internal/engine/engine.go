@@ -8,6 +8,7 @@ import (
 	"github.com/graphpost/graphpost/internal/auth"
 	"github.com/graphpost/graphpost/internal/config"
 	"github.com/graphpost/graphpost/internal/database"
+	"github.com/graphpost/graphpost/internal/dataloader"
 	"github.com/graphpost/graphpost/internal/events"
 	"github.com/graphpost/graphpost/internal/resolver"
 	"github.com/graphpost/graphpost/internal/schema"
@@ -160,6 +161,9 @@ func (e *Engine) ExecuteQuery(ctx context.Context, query string, variables map[s
 			},
 		}
 	}
+
+	// Add DataLoader to context to prevent N+1 queries
+	ctx = e.addDataLoaderToContext(ctx)
 
 	result := graphql.Do(graphql.Params{
 		Schema:         *e.graphqlSchema,
@@ -407,6 +411,12 @@ type CustomTypesMetadata struct {
 type CustomInputObject struct {
 	Name   string         `json:"name"`
 	Fields []CustomField  `json:"fields"`
+}
+
+// addDataLoaderToContext adds a DataLoader to context for batching queries
+func (e *Engine) addDataLoaderToContext(ctx context.Context) context.Context {
+	loader := dataloader.NewRelationshipLoader(e.resolver)
+	return context.WithValue(ctx, schema.DataLoaderKey, loader)
 }
 
 // CustomObject defines a custom object type
