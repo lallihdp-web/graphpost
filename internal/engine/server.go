@@ -112,6 +112,101 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.Stop(ctx)
 }
 
+// formatGraphQLResponse formats the GraphQL result according to the GraphQL spec
+// Spec: https://spec.graphql.org/October2021/#sec-Response-Format
+func (s *Server) formatGraphQLResponse(result interface{}) map[string]interface{} {
+	response := make(map[string]interface{})
+
+	// Type assert to access the result fields
+	if resultMap, ok := result.(map[string]interface{}); ok {
+		// Add data field (may be null if only errors)
+		if data, hasData := resultMap["data"]; hasData {
+			response["data"] = data
+		} else {
+			response["data"] = nil
+		}
+
+		// Format errors according to GraphQL spec
+		if errors, hasErrors := resultMap["errors"]; hasErrors {
+			if errorSlice, ok := errors.([]interface{}); ok {
+				formattedErrors := make([]map[string]interface{}, 0, len(errorSlice))
+				for _, err := range errorSlice {
+					formattedErrors = append(formattedErrors, s.formatGraphQLError(err))
+				}
+				response["errors"] = formattedErrors
+			}
+		}
+
+		// Add extensions if present (for metadata, tracing, etc.)
+		if extensions, hasExtensions := resultMap["extensions"]; hasExtensions {
+			response["extensions"] = extensions
+		}
+	}
+
+	return response
+}
+
+// formatGraphQLError formats a single error according to GraphQL spec
+// Spec requires: message (required), locations, path, extensions
+func (s *Server) formatGraphQLError(err interface{}) map[string]interface{} {
+	formatted := make(map[string]interface{})
+
+	if errorMap, ok := err.(map[string]interface{}); ok {
+		// Message is required
+		if message, hasMessage := errorMap["message"]; hasMessage {
+			formatted["message"] = message
+		} else if msg, hasMsg := errorMap["msg"]; hasMsg {
+			formatted["message"] = msg
+		} else {
+			formatted["message"] = "An error occurred"
+		}
+
+		// Locations (array of {line, column})
+		if locations, hasLocations := errorMap["locations"]; hasLocations {
+			formatted["locations"] = locations
+		}
+
+		// Path (array of field names/indices leading to the error)
+		if path, hasPath := errorMap["path"]; hasPath {
+			formatted["path"] = path
+		}
+
+		// Extensions (for additional error metadata like error code, timestamp, etc.)
+		extensions := make(map[string]interface{})
+
+		// Add error code if present
+		if code, hasCode := errorMap["code"]; hasCode {
+			extensions["code"] = code
+		} else if errorType, hasType := errorMap["type"]; hasType {
+			extensions["code"] = errorType
+		}
+
+		// Add timestamp
+		extensions["timestamp"] = time.Now().Format(time.RFC3339)
+
+		// Include any existing extensions
+		if existingExt, hasExt := errorMap["extensions"]; hasExt {
+			if extMap, ok := existingExt.(map[string]interface{}); ok {
+				for k, v := range extMap {
+					extensions[k] = v
+				}
+			}
+		}
+
+		if len(extensions) > 0 {
+			formatted["extensions"] = extensions
+		}
+	} else {
+		// If not a map, treat as error message
+		formatted["message"] = fmt.Sprintf("%v", err)
+		formatted["extensions"] = map[string]interface{}{
+			"timestamp": time.Now().Format(time.RFC3339),
+		}
+	}
+
+	return formatted
+}
+
 // handleGraphQL handles GraphQL requests
 func (s *Server) handleGraphQL(w http.ResponseWriter, r *http.Request) {
 	// Handle WebSocket upgrade for subscriptions
@@ -150,8 +245,18 @@ func (s *Server) handleGraphQL(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	result := s.engine.ExecuteQuery(ctx, request.Query, request.Variables, request.OperationName)
 
+	// Format response according to GraphQL spec
+	response := s.formatGraphQLResponse(result)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	// Set appropriate HTTP status code based on errors
+	if hasErrors := len(result.Errors) > 0; hasErrors {
+		// GraphQL spec says to return 200 even with errors, but some implementations use 400
+		// We'll use 200 for GraphQL errors (query parsing/validation/execution)
+		// and 400 only for malformed requests (handled earlier)
+		w.WriteHeader(http.StatusOK)
+	}
+	json.NewEncoder(w).Encode(response)
 }
 
 // handleWebSocket handles WebSocket connections for subscriptions
