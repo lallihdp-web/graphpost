@@ -39,6 +39,7 @@ type Session struct {
 	AllowedRoles    []string               `json:"allowed_roles"`
 	IsAdmin         bool                   `json:"is_admin"`
 	Claims          map[string]interface{} `json:"claims"`
+	SessionVariables map[string]string     `json:"session_variables"` // All x-hasura-* / x-graphpost-* variables
 	ExpiresAt       time.Time              `json:"expires_at"`
 }
 
@@ -169,15 +170,26 @@ func (a *Authenticator) AuthenticateRequest(r *http.Request) (*Session, error) {
 	adminSecret := r.Header.Get("X-Admin-Secret")
 	if adminSecret != "" && adminSecret == a.config.AdminSecret {
 		return &Session{
-			Role:    "admin",
-			IsAdmin: true,
+			Role:             "admin",
+			IsAdmin:          true,
+			SessionVariables: make(map[string]string),
 		}, nil
 	}
 
 	// Extract JWT token based on configuration
 	token := a.extractToken(r)
 	if token != "" {
-		return a.ValidateJWT(token)
+		session, err := a.ValidateJWT(token)
+		if err != nil {
+			return nil, err
+		}
+
+		// Validate session variables from headers match JWT claims
+		if err := a.validateSessionVariables(r, session); err != nil {
+			return nil, err
+		}
+
+		return session, nil
 	}
 
 	// Check webhook authentication
@@ -188,7 +200,8 @@ func (a *Authenticator) AuthenticateRequest(r *http.Request) (*Session, error) {
 	// Return anonymous session if auth not required
 	if !a.config.Enabled {
 		return &Session{
-			Role: a.config.UnauthorizedRole,
+			Role:             a.config.UnauthorizedRole,
+			SessionVariables: make(map[string]string),
 		}, nil
 	}
 
@@ -566,7 +579,8 @@ func (a *Authenticator) jwkToPublicKey(jwk JWK) (interface{}, error) {
 // buildSessionFromPayload builds a session from JWT payload
 func (a *Authenticator) buildSessionFromPayload(payload map[string]interface{}) (*Session, error) {
 	session := &Session{
-		Claims: payload,
+		Claims:           payload,
+		SessionVariables: make(map[string]string),
 	}
 
 	// Get claims namespace
@@ -586,9 +600,16 @@ func (a *Authenticator) buildSessionFromPayload(payload map[string]interface{}) 
 		claims = make(map[string]interface{})
 	}
 
-	// Extract user ID (from 'sub' claim or mapped)
+	// Extract ALL session variables from claims (x-hasura-* and x-graphpost-*)
+	a.extractAllSessionVariables(session, claims)
+
+	// Extract user ID (from 'sub' claim or mapped or session variables)
 	if session.UserID == "" {
-		if sub, ok := payload["sub"].(string); ok {
+		if userID, ok := session.SessionVariables["x-hasura-user-id"]; ok {
+			session.UserID = userID
+		} else if userID, ok := session.SessionVariables["x-graphpost-user-id"]; ok {
+			session.UserID = userID
+		} else if sub, ok := payload["sub"].(string); ok {
 			session.UserID = sub
 		}
 	}
@@ -613,12 +634,101 @@ func (a *Authenticator) buildSessionFromPayload(payload map[string]interface{}) 
 		session.Role = session.AllowedRoles[0]
 	}
 
+	// Ensure role is in session variables
+	if session.Role != "" {
+		session.SessionVariables["x-hasura-role"] = session.Role
+		session.SessionVariables["x-graphpost-role"] = session.Role
+	}
+
+	// Ensure user ID is in session variables
+	if session.UserID != "" {
+		session.SessionVariables["x-hasura-user-id"] = session.UserID
+		session.SessionVariables["x-graphpost-user-id"] = session.UserID
+	}
+
 	// Check expiration for session
 	if exp, ok := payload["exp"].(float64); ok {
 		session.ExpiresAt = time.Unix(int64(exp), 0)
 	}
 
 	return session, nil
+}
+
+// extractAllSessionVariables extracts all x-hasura-* and x-graphpost-* variables from JWT claims
+func (a *Authenticator) extractAllSessionVariables(session *Session, claims map[string]interface{}) {
+	for key, value := range claims {
+		lowerKey := strings.ToLower(key)
+
+		// Check if this is a session variable (x-hasura-* or x-graphpost-*)
+		if strings.HasPrefix(lowerKey, "x-hasura-") || strings.HasPrefix(lowerKey, "x-graphpost-") {
+			// Convert value to string
+			strValue := ""
+			switch v := value.(type) {
+			case string:
+				strValue = v
+			case float64:
+				strValue = fmt.Sprintf("%.0f", v)
+			case int:
+				strValue = fmt.Sprintf("%d", v)
+			case int64:
+				strValue = fmt.Sprintf("%d", v)
+			case bool:
+				strValue = fmt.Sprintf("%t", v)
+			default:
+				// Try JSON marshaling for complex types
+				if bytes, err := json.Marshal(v); err == nil {
+					strValue = string(bytes)
+				}
+			}
+
+			if strValue != "" {
+				session.SessionVariables[lowerKey] = strValue
+			}
+		}
+	}
+}
+
+// validateSessionVariables validates that request headers match JWT claim session variables
+func (a *Authenticator) validateSessionVariables(r *http.Request, session *Session) error {
+	// Check all headers that start with X-Hasura- or X-GraphPost-
+	for headerName, headerValues := range r.Header {
+		lowerHeader := strings.ToLower(headerName)
+
+		// Only validate session variable headers
+		if !strings.HasPrefix(lowerHeader, "x-hasura-") && !strings.HasPrefix(lowerHeader, "x-graphpost-") {
+			continue
+		}
+
+		// Skip Authorization and Admin-Secret headers
+		if lowerHeader == "x-admin-secret" {
+			continue
+		}
+
+		if len(headerValues) == 0 {
+			continue
+		}
+
+		headerValue := headerValues[0]
+
+		// Check if this session variable exists in JWT claims
+		if claimValue, ok := session.SessionVariables[lowerHeader]; ok {
+			// Validate that header value matches JWT claim value
+			if headerValue != claimValue {
+				return fmt.Errorf(
+					"session variable mismatch: header %s=%s does not match JWT claim %s=%s",
+					headerName, headerValue, lowerHeader, claimValue,
+				)
+			}
+		} else {
+			// Header provided but not in JWT claims - this is suspicious
+			return fmt.Errorf(
+				"session variable %s provided in header but not found in JWT claims",
+				headerName,
+			)
+		}
+	}
+
+	return nil
 }
 
 // getClaimsNamespace returns the claims namespace from config
@@ -863,26 +973,30 @@ func (a *Authenticator) ApplyColumnPermissions(session *Session, table string, o
 	return filtered
 }
 
-// substituteSessionVariables replaces X-Hasura-* variables in filters
+// substituteSessionVariables replaces X-Hasura-* and X-GraphPost-* variables in filters
 func (a *Authenticator) substituteSessionVariables(filter map[string]interface{}, session *Session) map[string]interface{} {
 	result := make(map[string]interface{})
 
 	for key, value := range filter {
 		switch v := value.(type) {
 		case string:
-			if strings.HasPrefix(v, "X-Hasura-") {
-				// Substitute session variable
-				switch v {
-				case "X-Hasura-User-Id":
-					result[key] = session.UserID
-				case "X-Hasura-Role":
-					result[key] = session.Role
-				default:
-					// Check in claims
-					if claims, ok := session.Claims[a.config.JWTClaimsNamespace].(map[string]interface{}); ok {
-						if val, ok := claims[strings.ToLower(v)]; ok {
-							result[key] = val
-						}
+			// Check if this is a session variable reference
+			if strings.HasPrefix(v, "X-Hasura-") || strings.HasPrefix(v, "X-GraphPost-") {
+				lowerKey := strings.ToLower(v)
+
+				// Try to find in session variables map
+				if val, ok := session.SessionVariables[lowerKey]; ok {
+					result[key] = val
+				} else {
+					// Fallback to specific session fields
+					switch lowerKey {
+					case "x-hasura-user-id", "x-graphpost-user-id":
+						result[key] = session.UserID
+					case "x-hasura-role", "x-graphpost-role":
+						result[key] = session.Role
+					default:
+						// Keep original value if not found
+						result[key] = v
 					}
 				}
 			} else {
