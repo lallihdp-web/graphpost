@@ -2,14 +2,17 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
+	"github.com/dosco/graphjin/core/v3"
 	"github.com/graphpost/graphpost/internal/auth"
 	"github.com/graphpost/graphpost/internal/config"
 	"github.com/graphpost/graphpost/internal/database"
 	"github.com/graphpost/graphpost/internal/dataloader"
 	"github.com/graphpost/graphpost/internal/events"
+	"github.com/graphpost/graphpost/internal/graphjin"
 	"github.com/graphpost/graphpost/internal/resolver"
 	"github.com/graphpost/graphpost/internal/schema"
 	"github.com/graphpost/graphpost/internal/subscription"
@@ -27,6 +30,7 @@ type Engine struct {
 	authenticator  *auth.Authenticator
 	subManager     *subscription.Manager
 	triggerManager *events.TriggerManager
+	graphjinEngine *graphjin.Engine  // GraphJin engine (when enabled)
 	mu             sync.RWMutex
 	ready          bool
 }
@@ -67,13 +71,24 @@ func (e *Engine) Initialize(ctx context.Context) error {
 	// Wire authenticator to resolver for permission checking
 	e.resolver.SetAuthenticator(e.authenticator)
 
-	// Generate GraphQL schema with resolver
-	generator := schema.NewGenerator(dbSchema, &e.config.GraphQL, e.resolver)
-	graphqlSchema, err := generator.Generate()
-	if err != nil {
-		return fmt.Errorf("failed to generate GraphQL schema: %w", err)
+	// Initialize GraphJin engine if enabled
+	if e.config.GraphJin.Enabled {
+		gjEngine, err := graphjin.NewEngine(e.config, dbConn.Pool())
+		if err != nil {
+			return fmt.Errorf("failed to initialize GraphJin engine: %w", err)
+		}
+		e.graphjinEngine = gjEngine
+		fmt.Println("✓ GraphJin engine initialized (optimized GraphQL to SQL compiler)")
+	} else {
+		// Generate GraphQL schema with resolver (legacy engine)
+		generator := schema.NewGenerator(dbSchema, &e.config.GraphQL, e.resolver)
+		graphqlSchema, err := generator.Generate()
+		if err != nil {
+			return fmt.Errorf("failed to generate GraphQL schema: %w", err)
+		}
+		e.graphqlSchema = graphqlSchema
+		fmt.Println("✓ Legacy GraphQL engine initialized")
 	}
-	e.graphqlSchema = graphqlSchema
 
 	// Initialize subscription manager
 	e.subManager = subscription.NewManager(dbConn, e.resolver, dbSchema)
@@ -162,6 +177,12 @@ func (e *Engine) ExecuteQuery(ctx context.Context, query string, variables map[s
 		}
 	}
 
+	// Route to GraphJin if enabled
+	if e.config.GraphJin.Enabled && e.graphjinEngine != nil {
+		return e.executeQueryWithGraphJin(ctx, query, variables, operationName)
+	}
+
+	// Legacy engine execution
 	// Add DataLoader to context to prevent N+1 queries
 	ctx = e.addDataLoaderToContext(ctx)
 
@@ -172,6 +193,74 @@ func (e *Engine) ExecuteQuery(ctx context.Context, query string, variables map[s
 		OperationName:  operationName,
 		Context:        ctx,
 	})
+
+	return result
+}
+
+// executeQueryWithGraphJin executes a query using GraphJin engine
+func (e *Engine) executeQueryWithGraphJin(ctx context.Context, query string, variables map[string]interface{}, operationName string) *graphql.Result {
+	// Prepare request config for GraphJin
+	// Extract user context for row-level security
+	session := auth.GetSessionFromContext(ctx)
+
+	// GraphJin request configuration
+	var rc *core.RequestConfig
+	if session != nil {
+		rc = &core.RequestConfig{}
+		// Pass additional variables if needed
+		if session.UserID != "" {
+			if rc.Vars == nil {
+				rc.Vars = make(map[string]interface{})
+			}
+			rc.Vars["user_id"] = session.UserID
+			rc.Vars["user_role"] = session.Role
+		}
+	}
+
+	// Execute query through GraphJin
+	gjResult, err := e.graphjinEngine.Execute(ctx, query, variables, rc)
+	if err != nil {
+		return &graphql.Result{
+			Errors: []gqlerrors.FormattedError{
+				{
+					Message: fmt.Sprintf("GraphJin execution error: %v", err),
+					Extensions: map[string]interface{}{
+						"code": "GRAPHJIN_ERROR",
+					},
+				},
+			},
+		}
+	}
+
+	// Convert GraphJin result to graphql.Result format
+	var data interface{}
+	if len(gjResult.Data) > 0 {
+		// Parse JSON data
+		if err := json.Unmarshal(gjResult.Data, &data); err != nil {
+			return &graphql.Result{
+				Errors: []gqlerrors.FormattedError{
+					{Message: fmt.Sprintf("Failed to parse GraphJin result: %v", err)},
+				},
+			}
+		}
+	}
+
+	result := &graphql.Result{
+		Data: data,
+	}
+
+	// Convert GraphJin errors to GraphQL format
+	if len(gjResult.Errors) > 0 {
+		result.Errors = make([]gqlerrors.FormattedError, len(gjResult.Errors))
+		for i, gjErr := range gjResult.Errors {
+			result.Errors[i] = gqlerrors.FormattedError{
+				Message: gjErr.Message,
+				Extensions: map[string]interface{}{
+					"code": "GRAPHJIN_QUERY_ERROR",
+				},
+			}
+		}
+	}
 
 	return result
 }

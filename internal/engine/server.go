@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/graphpost/graphpost/internal/auth"
+	"github.com/graphpost/graphpost/internal/webui"
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/gqlerrors"
 )
@@ -69,6 +70,12 @@ func (s *Server) Start() error {
 		mux.HandleFunc("/console/", s.handleConsole)
 	}
 
+	// GraphJin Web UI Console
+	if cfg.GraphJin.Enabled || cfg.Console.Enabled {
+		webuiHandler := webui.Handler("/webui", "/v1/graphql")
+		mux.Handle("/webui/", webuiHandler)
+	}
+
 	// GraphQL Playground
 	if cfg.Server.EnablePlayground {
 		mux.HandleFunc("/", s.handlePlayground)
@@ -91,6 +98,10 @@ func (s *Server) Start() error {
 
 	if cfg.Server.EnablePlayground {
 		fmt.Printf("🎮 GraphQL Playground: http://%s:%d/\n", cfg.Server.Host, cfg.Server.Port)
+	}
+
+	if cfg.GraphJin.Enabled || cfg.Console.Enabled {
+		fmt.Printf("🖥️  GraphJin Web UI: http://%s:%d/webui/\n", cfg.Server.Host, cfg.Server.Port)
 	}
 
 	return s.server.ListenAndServe()

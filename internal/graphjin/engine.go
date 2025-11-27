@@ -3,6 +3,7 @@ package graphjin
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/dosco/graphjin/core/v3"
@@ -39,8 +40,7 @@ func NewEngine(cfg *config.Config, pool *pgxpool.Pool) (*Engine, error) {
 		Production:   cfg.GraphJin.Production,
 		SetUserID:    true, // Enable user_id from context
 
-		// Performance
-		EnableTracing:    cfg.GraphJin.EnableTracing,
+		// Enable introspection in development
 		EnableIntrospection: cfg.Server.EnableIntrospection,
 
 		// Default limit for queries
@@ -61,24 +61,24 @@ func NewEngine(cfg *config.Config, pool *pgxpool.Pool) (*Engine, error) {
 }
 
 // Execute executes a GraphQL query using GraphJin
-func (e *Engine) Execute(ctx context.Context, query string, vars map[string]interface{}, rc *core.ReqConfig) (*core.Result, error) {
+func (e *Engine) Execute(ctx context.Context, query string, vars map[string]interface{}, rc *core.RequestConfig) (*core.Result, error) {
+	// Convert variables to json.RawMessage
+	var varsJSON json.RawMessage
+	if vars != nil {
+		b, err := json.Marshal(vars)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal variables: %w", err)
+		}
+		varsJSON = b
+	}
+
 	// Execute query through GraphJin
-	res, err := e.gj.GraphQL(ctx, query, vars, rc)
+	res, err := e.gj.GraphQL(ctx, query, varsJSON, rc)
 	if err != nil {
 		return nil, fmt.Errorf("GraphJin query execution failed: %w", err)
 	}
 
 	return res, nil
-}
-
-// Subscribe creates a GraphQL subscription
-func (e *Engine) Subscribe(ctx context.Context, query string, vars map[string]interface{}, rc *core.ReqConfig) (*core.Member, error) {
-	member, err := e.gj.Subscribe(ctx, query, vars, rc)
-	if err != nil {
-		return nil, fmt.Errorf("GraphJin subscription failed: %w", err)
-	}
-
-	return member, nil
 }
 
 // Reload reloads the GraphJin configuration and schema

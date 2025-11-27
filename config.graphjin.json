@@ -51,7 +51,7 @@
     "max_age": 86400
   },
   "graphjin": {
-    "enabled": false,
+    "enabled": true,
     "production": false,
     "allow_list_file": "allow.list",
     "enable_tracing": false,
