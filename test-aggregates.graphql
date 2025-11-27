@@ -1,0 +1,264 @@
+# Test Aggregate Queries for GraphPost with GraphJin
+# Based on init.sql schema
+
+# ============================================
+# Basic Aggregate Queries
+# ============================================
+
+# Query 1: Count all categories
+query CountCategories {
+  categories {
+    count_id
+  }
+}
+
+# Query 2: Count all users
+query CountUsers {
+  users {
+    count_id
+  }
+}
+
+# Query 3: Count all posts
+query CountPosts {
+  posts {
+    count_id
+  }
+}
+
+# Query 4: Count published posts only
+query CountPublishedPosts {
+  posts(where: { published: { eq: true } }) {
+    count_id
+  }
+}
+
+# ============================================
+# List with Counts
+# ============================================
+
+# Query 5: List all categories
+query ListCategories {
+  categories {
+    id
+    name
+    description
+  }
+}
+
+# Query 6: List users with email
+query ListUsers {
+  users {
+    id
+    name
+    email
+  }
+}
+
+# ============================================
+# Nested Aggregate Queries
+# ============================================
+
+# Query 7: Users with their post counts
+query UsersWithPostCounts {
+  users {
+    id
+    name
+    email
+    posts {
+      count_id
+    }
+  }
+}
+
+# Query 8: Users with their comment counts
+query UsersWithCommentCounts {
+  users {
+    id
+    name
+    comments {
+      count_id
+    }
+  }
+}
+
+# Query 9: Posts with comment counts
+query PostsWithCommentCounts {
+  posts {
+    id
+    title
+    published
+    comments {
+      count_id
+    }
+  }
+}
+
+# ============================================
+# Numeric Aggregates
+# ============================================
+
+# Query 10: Aggregate statistics on post IDs
+query PostStatistics {
+  posts {
+    count_id
+    avg_id
+    min_id
+    max_id
+  }
+}
+
+# Query 11: User ID statistics
+query UserStatistics {
+  users {
+    count_id
+    avg_id
+    min_id
+    max_id
+  }
+}
+
+# ============================================
+# Complex Nested Queries
+# ============================================
+
+# Query 12: Users with all their activity counts
+query UserActivity {
+  users {
+    id
+    name
+    email
+    posts {
+      count_id
+    }
+    comments {
+      count_id
+    }
+  }
+}
+
+# Query 13: Posts with author and comment counts
+query PostsWithDetails {
+  posts {
+    id
+    title
+    published
+    author {
+      id
+      name
+    }
+    comments {
+      count_id
+    }
+  }
+}
+
+# ============================================
+# Filtered Aggregates
+# ============================================
+
+# Query 14: Count posts by specific author
+query PostsByAlice {
+  posts(where: { author_id: { eq: 1 } }) {
+    count_id
+  }
+}
+
+# Query 15: Published posts with comment counts
+query PublishedPostsWithComments {
+  posts(where: { published: { eq: true } }) {
+    id
+    title
+    comments {
+      count_id
+    }
+  }
+}
+
+# ============================================
+# Grouping Examples
+# ============================================
+
+# Query 16: Posts grouped by published status
+# (This returns aggregate per group)
+query PostsByPublishStatus {
+  posts {
+    published
+    count_id
+  }
+}
+
+# Query 17: Comments grouped by post
+query CommentsByPost {
+  comments {
+    post_id
+    count_id
+  }
+}
+
+# ============================================
+# Junction Table Aggregates
+# ============================================
+
+# Query 18: Count post-category relationships
+query PostCategoryCounts {
+  post_categories {
+    count_id
+  }
+}
+
+# Query 19: Posts per category (via junction)
+query PostsPerCategory {
+  post_categories {
+    category_id
+    count_id
+    category {
+      name
+    }
+  }
+}
+
+# ============================================
+# Expected Results Examples
+# ============================================
+
+# Query 1 Result:
+# {
+#   "data": {
+#     "categories": {
+#       "count_id": 3
+#     }
+#   }
+# }
+
+# Query 7 Result:
+# {
+#   "data": {
+#     "users": [
+#       {
+#         "id": 1,
+#         "name": "Alice Johnson",
+#         "email": "alice@example.com",
+#         "posts": {
+#           "count_id": 2
+#         }
+#       },
+#       {
+#         "id": 2,
+#         "name": "Bob Smith",
+#         "email": "bob@example.com",
+#         "posts": {
+#           "count_id": 1
+#         }
+#       },
+#       {
+#         "id": 3,
+#         "name": "Charlie Brown",
+#         "email": "charlie@example.com",
+#         "posts": {
+#           "count_id": 1
+#         }
+#       }
+#     ]
+#   }
+# }
