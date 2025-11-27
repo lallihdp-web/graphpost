@@ -51,6 +51,7 @@ type Config struct {
 	Events    EventsConfig    `json:"events"`
 	CORS      CORSConfig      `json:"cors"`
 	GraphQL   GraphQLConfig   `json:"graphql"`
+	GraphJin  GraphJinConfig  `json:"graphjin"`  // GraphJin configuration
 	Telemetry TelemetryConfig `json:"telemetry"`
 	Logging   LoggingConfig   `json:"logging"`
 	Cache     CacheConfig     `json:"cache"`
@@ -88,6 +89,27 @@ type GraphQLConfig struct {
 	// Applied via context.WithTimeout at query execution
 	// 0 = no timeout (default)
 	QueryTimeout Duration `json:"query_timeout"`
+}
+
+// GraphJinConfig holds GraphJin-specific configuration
+type GraphJinConfig struct {
+	// Enabled determines whether to use GraphJin engine
+	Enabled bool `json:"enabled"`
+
+	// Production mode enables allow.list and disables introspection
+	Production bool `json:"production"`
+
+	// AllowListFile is the path to the allow.list file (for production)
+	AllowListFile string `json:"allow_list_file"`
+
+	// EnableTracing enables query tracing and performance metrics
+	EnableTracing bool `json:"enable_tracing"`
+
+	// DefaultLimit is the default limit for queries (default: 20)
+	DefaultLimit int `json:"default_limit"`
+
+	// DisableFunctions disables PostgreSQL function support
+	DisableFunctions bool `json:"disable_functions"`
 }
 
 // DatabaseConfig holds database connection configuration
