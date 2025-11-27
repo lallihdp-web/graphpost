@@ -44,7 +44,11 @@ func NewEngine(cfg *config.Config, pool *pgxpool.Pool) (*Engine, error) {
 		EnableIntrospection: cfg.Server.EnableIntrospection,
 
 		// Default limit for queries
-		DefaultLimit: 20,
+		DefaultLimit: cfg.GraphJin.DefaultLimit,
+
+		// Enable aggregations and functions (set from config)
+		DisableAgg:   false, // Enable aggregate functions (count, sum, avg, min, max)
+		DisableFuncs: cfg.GraphJin.DisableFunctions, // Control other functions
 	}
 
 	// Initialize GraphJin
