@@ -1,0 +1,51 @@
+# Test GraphJin Introspection
+
+# Query 1: Check if __schema works
+query IntrospectionTest1 {
+  __schema {
+    queryType {
+      name
+      fields {
+        name
+        description
+      }
+    }
+  }
+}
+
+# Query 2: Check post_categories type
+query IntrospectionTest2 {
+  __type(name: "post_categories") {
+    name
+    kind
+    fields {
+      name
+      type {
+        name
+        kind
+      }
+    }
+  }
+}
+
+# Query 3: Check if aggregate fields show up
+query IntrospectionTest3 {
+  __type(name: "categories") {
+    name
+    fields {
+      name
+      description
+    }
+  }
+}
+
+# Query 4: Full introspection (for debugging)
+query FullIntrospection {
+  __schema {
+    types {
+      name
+      kind
+      description
+    }
+  }
+}
